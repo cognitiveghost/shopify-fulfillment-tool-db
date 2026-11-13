@@ -7,6 +7,7 @@ and a Store-based PC agree on a share.
 import json
 import os
 import shutil
+import time
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime
@@ -14,12 +15,13 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 from shared.atomic_write import atomic_write_json, replace_with_retry
-from shared.file_lock import locked_file
+from shared.file_lock import FileLockError, locked_file
 from shared.metadata_utils import parse_timestamp
 
 LOCK_FILENAME = ".session.lock"
 STALE_SECONDS = 120
-_UPDATE_LOCK_SUFFIX = ".updlock"
+LOCK_READ_ATTEMPTS = 3
+LOCK_READ_RETRY_SECONDS = 0.2
 
 
 def _now() -> datetime:
@@ -107,10 +109,13 @@ class FileStore(Store):
 
     # --- data -----------------------------------------------------------
     def read_json(self, rel):
+        path = self._p(rel)  # ValueError for a bad rel must not be wrapped below
         try:
-            return json.loads(self._p(rel).read_text(encoding="utf-8"))
+            return json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             raise StoreNotFound(rel) from None
+        except (OSError, ValueError) as e:  # ValueError covers JSONDecodeError/UnicodeDecodeError
+            raise StoreError(rel) from e
 
     def write_json(self, rel, data):
         atomic_write_json(self._p(rel), data)
@@ -118,22 +123,28 @@ class FileStore(Store):
     def update_json(self, rel, fn):
         path = self._p(rel)
         path.parent.mkdir(parents=True, exist_ok=True)
-        # Lock a sidecar, not the data file: the data file's inode changes on every replace.
-        side = path.with_name(f".{path.name}{_UPDATE_LOCK_SUFFIX}")
-        with open(side, "a+b") as fh, locked_file(fh):
-            try:
-                current = self.read_json(rel)
-            except StoreNotFound:
-                current = None
-            new = fn(current)
-            atomic_write_json(path, new)
-            return new
+        # Lock a sidecar, not the data file (its inode changes on every replace).
+        # `<name>.lock` is the convention of today's callers, so old and new PCs share it.
+        side = path.with_name(path.name + ".lock")
+        try:
+            with open(side, "a+b") as fh, locked_file(fh):
+                try:
+                    current = self.read_json(rel)
+                except StoreNotFound:
+                    current = None
+                new = fn(current)
+                atomic_write_json(path, new)
+                return new
+        except (OSError, FileLockError) as e:
+            raise StoreError(rel) from e
 
     def read_bytes(self, rel):
         try:
             return self._p(rel).read_bytes()
         except FileNotFoundError:
             raise StoreNotFound(rel) from None
+        except OSError as e:
+            raise StoreError(rel) from e
 
     def write_bytes(self, rel, data):
         path = self._p(rel)
@@ -151,10 +162,14 @@ class FileStore(Store):
         return self._p(rel).exists()
 
     def list_dir(self, rel):
-        d = self._p(rel)
-        if not d.is_dir():
+        try:
+            names = [c.name for c in self._p(rel).iterdir()]
+        except (FileNotFoundError, NotADirectoryError):
             return []
-        return sorted(c.name for c in d.iterdir() if not c.name.endswith(_UPDATE_LOCK_SUFFIX))
+        except OSError as e:
+            raise StoreError(rel) from e
+        # hide update_json's `<data>.lock` sidecars, but never .session.lock
+        return sorted(n for n in names if not (n.endswith(".lock") and n != LOCK_FILENAME and n[:-5] in names))
 
     def move(self, src, dst):
         s, d = self._p(src), self._p(dst)
@@ -184,11 +199,17 @@ class FileStore(Store):
 
     def _read_lock(self, lock_path: Path) -> dict | None:
         """Lock dict, or None if absent/invalid. An unreadable lock counts as held (aged by mtime)."""
-        try:
-            data = json.loads(lock_path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return None
-        except (OSError, ValueError):
+        data = None
+        for attempt in range(LOCK_READ_ATTEMPTS):
+            try:
+                data = json.loads(lock_path.read_text(encoding="utf-8"))
+                break
+            except FileNotFoundError:
+                return None
+            except (OSError, ValueError):
+                if attempt < LOCK_READ_ATTEMPTS - 1:
+                    time.sleep(LOCK_READ_RETRY_SECONDS)
+        if data is None:
             try:
                 hb = datetime.fromtimestamp(lock_path.stat().st_mtime).astimezone().isoformat()
             except OSError:
@@ -199,6 +220,10 @@ class FileStore(Store):
         ):
             return None
         return data
+
+    @staticmethod
+    def _mine(data: dict, pc: str) -> bool:
+        return data.get("locked_by") == pc and data.get("process_id") == os.getpid()
 
     @staticmethod
     def _heartbeat(data: dict) -> datetime | None:
@@ -230,7 +255,7 @@ class FileStore(Store):
         lp = self._lock_path(list_dir)
         data = self._read_lock(lp)
         if data is not None:
-            if data.get("locked_by") == pc:
+            if self._mine(data, pc):
                 self.heartbeat_list_lock(list_dir, pc)
                 return LockInfo(True, pc, data.get("user_name"), self._heartbeat(data))
             return LockInfo(False, data.get("locked_by"), data.get("user_name"), self._heartbeat(data))
@@ -252,7 +277,7 @@ class FileStore(Store):
     def heartbeat_list_lock(self, list_dir, pc):
         lp = self._lock_path(list_dir)
         data = self._read_lock(lp)
-        if data is None or data.get("locked_by") != pc:
+        if data is None or not self._mine(data, pc):
             return False
         data["heartbeat"] = _now().isoformat()
         atomic_write_json(lp, data)
@@ -261,5 +286,5 @@ class FileStore(Store):
     def release_list_lock(self, list_dir, pc):
         lp = self._lock_path(list_dir)
         data = self._read_lock(lp)
-        if data is not None and data.get("locked_by") == pc:
+        if data is not None and self._mine(data, pc):
             lp.unlink(missing_ok=True)

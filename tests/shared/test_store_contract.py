@@ -4,7 +4,7 @@ from datetime import timedelta
 import pytest
 
 from shared import store as store_mod
-from shared.store import FileStore, StoreNotFound
+from shared.store import FileStore, StoreError, StoreNotFound
 
 LIST = "Sessions/CLIENT_X/s1/packing/list1"
 
@@ -132,6 +132,9 @@ def test_base_store_methods_not_implemented():
 
 
 def test_lock_file_compat_with_packer_format(store, tmp_path):
+    if not isinstance(store, FileStore):
+        pytest.skip("raw lock-file format is FileStore-specific")
+    store_mod.LOCK_READ_RETRY_SECONDS = 0  # keep the unreadable-lock case fast
     # naive-timestamp / unreadable / invalid lock files, as a production Packer PC may leave them
     lock = tmp_path / LIST / ".session.lock"
     lock.parent.mkdir(parents=True)
@@ -154,3 +157,40 @@ def test_lock_ops_on_absent_lock(store):
     store.release_list_lock(LIST, "pc1")
     from datetime import datetime, timezone
     assert not store.force_take_list_lock(LIST, "pc1", "a", datetime.now(timezone.utc))
+
+
+def test_corrupt_json_raises_store_error(store):
+    store.write_bytes("bad.json", b"{not json")
+    with pytest.raises(StoreError) as e:
+        store.read_json("bad.json")
+    assert not isinstance(e.value, StoreNotFound)
+
+
+def test_update_json_sidecar_lock_hidden_from_list_dir(store):
+    store.update_json("d/c.json", lambda d: {"n": 1})
+    assert store.list_dir("d") == ["c.json"]
+
+
+def test_session_lock_visible_in_list_dir(store):
+    store.acquire_list_lock(LIST, "pc1", "ann")
+    assert ".session.lock" in store.list_dir(LIST)
+
+
+def test_lock_same_pc_other_process_refused(store, tmp_path):
+    if not isinstance(store, FileStore):
+        pytest.skip("raw lock-file edit is FileStore-specific")
+    store.acquire_list_lock(LIST, "pc1", "ann")
+    lock = tmp_path / LIST / ".session.lock"
+    import json
+    body = json.loads(lock.read_text())
+    body["process_id"] += 1
+    lock.write_text(json.dumps(body))
+    assert not store.acquire_list_lock(LIST, "pc1", "ann").acquired
+    assert not store.heartbeat_list_lock(LIST, "pc1")
+    store.release_list_lock(LIST, "pc1")
+    assert lock.exists()
+
+
+def test_list_dir_on_a_file_is_empty(store):
+    store.write_bytes("f", b"x")
+    assert store.list_dir("f") == []
