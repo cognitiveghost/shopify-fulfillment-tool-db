@@ -31,6 +31,7 @@ import shopify_tool.profile_manager as profile_manager_module
 from gui.main_window_pyside import MainWindow
 from gui.session_write_queue import SessionWriteQueue
 from shared.atomic_write import atomic_write_json
+from shared.store import FileStore
 from shopify_tool import core, fulfillment_history, session_state
 from shopify_tool.analysis import lot_table, run_analysis
 from shopify_tool.profile_manager import ProfileManager
@@ -116,10 +117,10 @@ def test_a_failed_toggle_leaves_this_pcs_config_alone(profiles, monkeypatch, tog
     """The Setup page redraws from this copy: it must show what is on disk."""
     pc_a = _pc_opening_client(profiles)
 
-    def locked_by_another_pc(path, *_args, **_kwargs):
-        raise PermissionError(13, "being used by another process", str(path))
+    def locked_by_another_pc(_store, rel, *_args, **_kwargs):
+        raise PermissionError(13, "being used by another process", str(rel))
 
-    monkeypatch.setattr(profile_manager_module, "atomic_write_json", locked_by_another_pc)
+    monkeypatch.setattr(FileStore, "write_json", locked_by_another_pc)
     monkeypatch.setattr(main_window_module, "toast", Mock())
 
     toggle(pc_a)
@@ -454,7 +455,7 @@ def test_AUDIT_07_M7_a_migration_that_cannot_save_still_returns_the_config(
     def locked_by_another_pc(*_args, **_kwargs):
         raise PermissionError(13, "being used by another process", str(path))
 
-    monkeypatch.setattr(profile_manager_module, "atomic_write_json", locked_by_another_pc)
+    monkeypatch.setattr(FileStore, "write_json", locked_by_another_pc)
 
     config = load(profiles, "X")
 

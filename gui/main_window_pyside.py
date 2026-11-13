@@ -246,9 +246,7 @@ class MainWindow(QMainWindow):
         SessionManager holds the ProfileManager itself and follows it. ADR 0004.
         """
         if self.profile_manager.recheck_connection():
-            self.groups_manager = GroupsManager(
-                base_path=str(self.profile_manager.base_path)
-            )
+            self.groups_manager = GroupsManager(self.profile_manager.store)
         self.connectionChanged.emit(self.is_connected())
 
     def _init_managers(self):
@@ -278,9 +276,7 @@ class MainWindow(QMainWindow):
             self.session_manager = SessionManager(self.profile_manager)
 
             # Initialize GroupsManager
-            self.groups_manager = GroupsManager(
-                base_path=str(self.profile_manager.base_path)
-            )
+            self.groups_manager = GroupsManager(self.profile_manager.store)
 
             logger.info(
                 "ProfileManager, SessionManager, and GroupsManager initialized successfully"

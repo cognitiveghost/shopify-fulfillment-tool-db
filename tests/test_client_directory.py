@@ -19,7 +19,7 @@ def qapp():
 def groups_manager(profile_manager):
     from shopify_tool.groups_manager import GroupsManager
 
-    return GroupsManager(profile_manager.base_path)
+    return GroupsManager(profile_manager.store)
 
 
 @pytest.fixture

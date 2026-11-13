@@ -14,11 +14,9 @@ Key Features:
 
 import contextlib
 import copy
-import json
 import logging
 import os
 import re
-import shutil
 import threading
 import time
 from collections.abc import Callable
@@ -26,9 +24,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, ClassVar
 
-from shared.atomic_write import atomic_write_json
 from shared.logger import setup_logging
 from shared.server_connection import resolve_server_path, test_path_reachable
+from shared.store import FileStore, StoreError, StoreNotFound
 from shopify_tool.profile_migrations import (
     migrate_add_inventory_memory,
     migrate_add_tag_categories,
@@ -83,7 +81,7 @@ class ProfileManager:
     # Class-level cache: key → (data, mtime_float). mtime-based invalidation is more
     # correct than TTL — no stale reads after a write, no unnecessary re-reads within a window.
     # Key includes base_path so multiple instances with different roots don't collide.
-    _config_cache: ClassVar[dict[str, tuple[dict, float]]] = {}
+    _config_cache: ClassVar[dict[str, tuple[dict, object]]] = {}
 
     # This process's writes of shopify_config.json, one at a time, each
     # read-modify-write held whole. Inventory memory follows an edit on the
@@ -167,11 +165,12 @@ class ProfileManager:
         rebuilt in one place -- a base_path that moves without them is an
         object half-pointed at two servers.
         """
-        self.base_path = Path(base_path)
-        self.clients_dir = self.base_path / "Clients"
-        self.sessions_dir = self.base_path / "Sessions"
-        self.stats_dir = self.base_path / "Stats"
-        self.logs_dir = self.base_path / "Logs" / "shopify_tool"
+        self.store = FileStore(base_path)
+        self.base_path = self.store.root  # FileStore root; display only
+        self.clients_dir = self.store.local_path("Clients")
+        self.sessions_dir = self.store.local_path("Sessions")
+        self.stats_dir = self.store.local_path("Stats")
+        self.logs_dir = self.store.local_path("Logs/shopify_tool")
 
     def recheck_connection(self) -> bool:
         """Re-resolve the server path and re-test it. Returns reachability.
@@ -305,22 +304,18 @@ class ProfileManager:
                 Example: ["M", "A", "B"]
         """
         try:
-            if not self.clients_dir.exists():
+            if not self.store.exists("Clients"):
                 self.clients_dir.mkdir(parents=True, exist_ok=True)
                 return []
 
-            clients = []
-            for item in self.clients_dir.iterdir():
-                if item.is_dir() and item.name.startswith("CLIENT_"):
-                    client_id = item.name[len("CLIENT_") :]
-                    clients.append(client_id)
+            # a client is a folder with something in it (the Store has no is_dir)
+            return sorted(
+                name[len("CLIENT_") :]
+                for name in self.store.list_dir("Clients")
+                if name.startswith("CLIENT_") and self.store.list_dir(f"Clients/{name}")
+            )
 
-            return sorted(clients)
-
-        except PermissionError:
-            logger.exception("Permission denied accessing clients directory")
-            return []
-        except OSError:
+        except StoreError:
             logger.exception("File system error listing clients")
             return []
         except Exception:
@@ -332,11 +327,15 @@ class ProfileManager:
     def _lifecycle_paths(self, client_id: str):
         name = f"CLIENT_{client_id}"
         return (
-            self.clients_dir / name,
-            self.clients_dir / self.ARCHIVE_DIR / name,
-            self.sessions_dir / name,
-            self.sessions_dir / self.ARCHIVE_DIR / name,
+            f"Clients/{name}",
+            f"Clients/{self.ARCHIVE_DIR}/{name}",
+            f"Sessions/{name}",
+            f"Sessions/{self.ARCHIVE_DIR}/{name}",
         )
+
+    def _is_dir(self, rel: str) -> bool:
+        """A folder with something in it (the Store has no is_dir)."""
+        return bool(self.store.list_dir(rel))
 
     def _forget_client(self, client_id: str) -> None:
         self._config_cache.pop(f"{self.base_path}::shopify_{client_id}", None)
@@ -348,20 +347,18 @@ class ProfileManager:
         move when the second fails (ADR 0020)."""
         label = f"CLIENT_{client_id}"
         busy = f"{label} is open on another PC. Close it there, then try again."
-        dst_c.parent.mkdir(parents=True, exist_ok=True)
-        dst_s.parent.mkdir(parents=True, exist_ok=True)
         try:
-            os.rename(src_c, dst_c)
+            self.store.move(src_c, dst_c)
         except OSError as e:
             logger.warning(f"Could not move {src_c} to {dst_c}", exc_info=True)
             raise ProfileManagerError(busy) from e
-        if src_s.exists():
+        if self.store.exists(src_s):
             try:
-                os.rename(src_s, dst_s)
+                self.store.move(src_s, dst_s)
             except OSError as e:
                 logger.warning(f"Could not move {src_s} to {dst_s}", exc_info=True)
                 try:
-                    os.rename(dst_c, src_c)
+                    self.store.move(dst_c, src_c)
                 except OSError:
                     logger.error(f"{label} half {verb}: {dst_c} should be at {src_c}")
                     raise ProfileManagerError(
@@ -369,21 +366,21 @@ class ProfileManager:
                     ) from e
                 raise ProfileManagerError(busy) from e
 
-    def _edit_config_file(self, path: Path, change: Callable[[dict], None]) -> None:
+    def _edit_config_file(self, path: str, change: Callable[[dict], None]) -> None:
         """Best effort: the folder move is the act, the stamp is a note."""
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = self.store.read_json(path)
             change(data)
-            atomic_write_json(path, data)
+            self.store.write_json(path, data)
         except Exception:
             logger.warning(f"Could not update {path}", exc_info=True)
 
     def archive_client(self, client_id: str) -> None:
         live_c, arch_c, live_s, arch_s = self._lifecycle_paths(client_id)
         label = f"CLIENT_{client_id}"
-        if not live_c.is_dir():
+        if not self._is_dir(live_c):
             raise ProfileManagerError(f"{label} does not exist.")
-        if arch_c.exists() or arch_s.exists():
+        if self.store.exists(arch_c) or self.store.exists(arch_s):
             raise ProfileManagerError(
                 f"An archived {label} already exists. Restore or delete it first."
             )
@@ -393,20 +390,20 @@ class ProfileManager:
             data["archived_at"] = datetime.now().astimezone().isoformat()
             data["archived_by"] = os.environ.get("COMPUTERNAME", "Unknown")
 
-        self._edit_config_file(arch_c / "client_config.json", stamp)
+        self._edit_config_file(f"{arch_c}/client_config.json", stamp)
         self._forget_client(client_id)
         logger.info(f"Archived {label}")
 
     def restore_client(self, client_id: str) -> None:
         live_c, arch_c, live_s, arch_s = self._lifecycle_paths(client_id)
         label = f"CLIENT_{client_id}"
-        if live_c.exists():
+        if self.store.exists(live_c):
             raise ProfileManagerError(
                 f"A live {label} exists. Rename or archive it before restoring."
             )
-        if not arch_c.is_dir():
+        if not self._is_dir(arch_c):
             raise ProfileManagerError(f"{label} is not archived.")
-        if arch_s.exists() and live_s.exists():
+        if self.store.exists(arch_s) and self.store.exists(live_s):
             # A PC that still had the client open saved after the archive, and
             # the write recreated the live folder (ADR 0020).
             raise ProfileManagerError(
@@ -419,21 +416,19 @@ class ProfileManager:
             data.pop("archived_at", None)
             data.pop("archived_by", None)
 
-        self._edit_config_file(live_c / "client_config.json", unstamp)
+        self._edit_config_file(f"{live_c}/client_config.json", unstamp)
         self._forget_client(client_id)
         logger.info(f"Restored {label}")
 
     def list_archived_clients(self) -> list[dict]:
-        root = self.clients_dir / self.ARCHIVE_DIR
-        if not root.is_dir():
-            return []
+        root = f"Clients/{self.ARCHIVE_DIR}"
         found = []
-        for d in sorted(root.iterdir(), key=lambda p: p.name):
-            if not (d.is_dir() and d.name.startswith("CLIENT_")):
+        for name in self.store.list_dir(root):
+            if not (name.startswith("CLIENT_") and self._is_dir(f"{root}/{name}")):
                 continue
-            cid = d.name[len("CLIENT_"):]
+            cid = name[len("CLIENT_"):]
             try:
-                cfg = json.loads((d / "client_config.json").read_text(encoding="utf-8"))
+                cfg = self.store.read_json(f"{root}/{name}/client_config.json")
             except Exception:
                 cfg = {}
             found.append(
@@ -446,20 +441,19 @@ class ProfileManager:
         return found
 
     def client_has_sessions(self, client_id: str) -> bool:
-        d = self.sessions_dir / f"CLIENT_{client_id}"
-        return d.is_dir() and any(p.is_dir() for p in d.iterdir())
+        # session folders have no extension; index and lock files do
+        return any("." not in n for n in self.store.list_dir(f"Sessions/CLIENT_{client_id}"))
 
     def delete_client(self, client_id: str) -> None:
         live_c, _arch_c, live_s, _arch_s = self._lifecycle_paths(client_id)
         label = f"CLIENT_{client_id}"
-        if not live_c.is_dir():
+        if not self._is_dir(live_c):
             raise ProfileManagerError(f"{label} does not exist.")
         if self.client_has_sessions(client_id):
             raise ProfileManagerError(f"{label} has sessions. Archive it instead.")
         try:
-            shutil.rmtree(live_c)
-            if live_s.exists():
-                shutil.rmtree(live_s)
+            self.store.delete(live_c)
+            self.store.delete(live_s)
         except OSError as e:
             raise ProfileManagerError(
                 f"{label} couldn't be deleted: a file in it is open. "
@@ -503,10 +497,10 @@ class ProfileManager:
             raise ValidationError(error_msg)
 
         client_id = client_id.upper()
-        client_dir = self.clients_dir / f"CLIENT_{client_id}"
+        client_dir = f"Clients/CLIENT_{client_id}"
 
         # Check if already exists, live or archived
-        if client_dir.exists() or (self.clients_dir / self.ARCHIVE_DIR / f"CLIENT_{client_id}").exists():
+        if self.store.exists(client_dir) or self.store.exists(f"Clients/{self.ARCHIVE_DIR}/CLIENT_{client_id}"):
             logger.warning(f"Client profile already exists (live or archived): CLIENT_{client_id}")
             return False
 
@@ -522,10 +516,13 @@ class ProfileManager:
             for key in ("client_id", "client_name", "created_at", "inventory_memory"):
                 shopify_config[key] = fresh[key]
 
+        # Claim before the try: a lost race must not clean up the winner's folder
+        if not self.store.claim_dir(client_dir):
+            logger.warning(f"Client profile already exists: CLIENT_{client_id}")
+            return False
+
         try:
-            # Create directory structure
-            client_dir.mkdir(parents=True)
-            (client_dir / "backups").mkdir()
+            self.store.claim_dir(f"{client_dir}/backups")
 
             # Create general client config
             client_config = {
@@ -536,17 +533,11 @@ class ProfileManager:
                 "ui_settings": {**self._get_default_ui_settings(), **(ui_settings or {})},
             }
 
-            config_path = client_dir / "client_config.json"
-            with open(config_path, "w", encoding="utf-8") as f:
-                json.dump(client_config, f, indent=2)
-
-            shopify_config_path = client_dir / "shopify_config.json"
-            with open(shopify_config_path, "w", encoding="utf-8") as f:
-                json.dump(shopify_config, f, indent=2)
+            self.store.write_json(f"{client_dir}/client_config.json", client_config)
+            self.store.write_json(f"{client_dir}/shopify_config.json", shopify_config)
 
             # Create session directory
-            session_client_dir = self.sessions_dir / f"CLIENT_{client_id}"
-            session_client_dir.mkdir(parents=True, exist_ok=True)
+            self.store.claim_dir(f"Sessions/CLIENT_{client_id}")
 
             logger.info(f"Client profile created: CLIENT_{client_id}")
             return True
@@ -554,8 +545,8 @@ class ProfileManager:
         except Exception as e:
             logger.exception("Failed to create client profile")
             # Cleanup on failure
-            if client_dir.exists():
-                shutil.rmtree(client_dir, ignore_errors=True)
+            with contextlib.suppress(Exception):
+                self.store.delete(client_dir)
             raise ProfileManagerError(f"Failed to create client profile: {e}")
 
     @staticmethod
@@ -652,6 +643,13 @@ class ProfileManager:
         logger.info(f"Config migrations completed for CLIENT_{client_id}")
         return True
 
+    def _stamp(self, rel: str):
+        """The file's change token for the config cache, or None when it can't be read."""
+        try:
+            return self.store.stamp(rel)
+        except StoreError:
+            return None
+
     def load_client_config(self, client_id: str) -> dict | None:
         """Load general configuration for a client, with mtime-based caching.
 
@@ -669,16 +667,13 @@ class ProfileManager:
         """
         client_id = client_id.upper()
         cache_key = f"{self.base_path}::client_{client_id}"
-        config_path = self.clients_dir / f"CLIENT_{client_id}" / "client_config.json"
+        config_path = f"Clients/CLIENT_{client_id}/client_config.json"
 
-        if not config_path.exists():
+        if not self.store.exists(config_path):
             logger.warning(f"Client config not found: CLIENT_{client_id}")
             return None
 
-        try:
-            current_mtime = config_path.stat().st_mtime
-        except OSError:
-            current_mtime = None
+        current_mtime = self._stamp(config_path)
 
         if current_mtime is not None and cache_key in self._config_cache:
             cached_data, cached_mtime = self._config_cache[cache_key]
@@ -687,8 +682,7 @@ class ProfileManager:
                 return copy.deepcopy(cached_data)
 
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
+            config = self.store.read_json(config_path)
 
             # Check if migrations are needed
             migrated = self._migrate_add_ui_settings(client_id, config)
@@ -701,23 +695,18 @@ class ProfileManager:
                     return config
                 # save_client_config() invalidates cache_key; re-stat so this
                 # call still populates the cache with the post-migration mtime.
-                try:
-                    current_mtime = config_path.stat().st_mtime
-                except OSError:
-                    current_mtime = None
+                current_mtime = self._stamp(config_path)
 
             if current_mtime is not None:
                 self._config_cache[cache_key] = (copy.deepcopy(config), current_mtime)
 
             return config
 
-        except PermissionError:
-            logger.exception(
-                f"Permission denied reading client config for CLIENT_{client_id}"
-            )
+        except StoreNotFound:
+            logger.warning(f"Client config not found: CLIENT_{client_id}")
             return None
-        except json.JSONDecodeError:
-            logger.exception(f"Invalid JSON in client config for CLIENT_{client_id}")
+        except StoreError:
+            logger.exception(f"Cannot read client config for CLIENT_{client_id}")
             return None
         except Exception:
             logger.exception(
@@ -739,17 +728,14 @@ class ProfileManager:
         """
         client_id = client_id.upper()
         cache_key = f"{self.base_path}::shopify_{client_id}"
-        config_path = self.clients_dir / f"CLIENT_{client_id}" / "shopify_config.json"
+        config_path = f"Clients/CLIENT_{client_id}/shopify_config.json"
 
-        if not config_path.exists():
+        if not self.store.exists(config_path):
             logger.warning(f"Shopify config not found: CLIENT_{client_id}")
             return None
 
-        # Check cache against current file mtime
-        try:
-            current_mtime = config_path.stat().st_mtime
-        except OSError:
-            current_mtime = None
+        # Check cache against the file's current change stamp
+        current_mtime = self._stamp(config_path)
 
         if current_mtime is not None and cache_key in self._config_cache:
             cached_data, cached_mtime = self._config_cache[cache_key]
@@ -758,8 +744,7 @@ class ProfileManager:
                 return copy.deepcopy(cached_data)
 
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
+            config = self.store.read_json(config_path)
 
             # Check if migrations are needed
             migrated_mappings = migrate_column_mappings_v1_to_v2(client_id, config)
@@ -791,10 +776,7 @@ class ProfileManager:
                     return config
                 # save_shopify_config() invalidates cache_key; re-stat so this
                 # call still populates the cache with the post-migration mtime.
-                try:
-                    current_mtime = config_path.stat().st_mtime
-                except OSError:
-                    current_mtime = None
+                current_mtime = self._stamp(config_path)
 
             if current_mtime is not None:
                 self._config_cache[cache_key] = (copy.deepcopy(config), current_mtime)
@@ -826,17 +808,17 @@ class ProfileManager:
             ProfileManagerError: If save fails
         """
         client_id = client_id.upper()
-        client_dir = self.clients_dir / f"CLIENT_{client_id}"
-        config_path = client_dir / "shopify_config.json"
+        client_dir = f"Clients/CLIENT_{client_id}"
+        config_path = f"{client_dir}/shopify_config.json"
 
-        if not client_dir.exists():
+        if not self.store.exists(client_dir):
             raise ProfileManagerError(
                 f"Client profile does not exist: CLIENT_{client_id}"
             )
 
         with self._config_write_lock:
             # Create backup before saving
-            if backup and config_path.exists():
+            if backup and self.store.exists(config_path):
                 self._create_backup(client_id, config_path, "shopify_config")
 
             # Update timestamp
@@ -848,8 +830,8 @@ class ProfileManager:
             logger.info(f"Saving config for CLIENT_{client_id}: {num_sets} sets")
 
             try:
-                atomic_write_json(config_path, config)
-            # Not just OSError: atomic_write_json re-raises whatever failed, so a
+                self.store.write_json(config_path, config)
+            # Not just OSError: the write re-raises whatever failed, so a
             # non-serialisable value arrives as TypeError. The declared contract
             # here is ProfileManagerError -- keep it true for every failure.
             except Exception as e:
@@ -859,13 +841,7 @@ class ProfileManager:
 
             self._config_cache.pop(f"{self.base_path}::shopify_{client_id}", None)
         elapsed_ms = (time.perf_counter() - start_time) * 1000
-        # Size from the file, not a second json.dumps of the whole config --
-        # this is the save path the share makes slow. A stat that fails here
-        # must not turn a save that succeeded into an error.
-        size = ""
-        with contextlib.suppress(OSError):
-            size = f"{config_path.stat().st_size:,} bytes, "
-        logger.info(f"Config saved for CLIENT_{client_id}: {size}{elapsed_ms:.0f}ms")
+        logger.info(f"Config saved for CLIENT_{client_id}: {elapsed_ms:.0f}ms")
         return True
 
     def update_shopify_config(
@@ -1098,38 +1074,40 @@ class ProfileManager:
 
         return success
 
-    def _create_backup(self, client_id: str, file_path: Path, file_type: str):
+    def _create_backup(self, client_id: str, file_path: str, file_type: str):
         """Create timestamped backup of a configuration file.
 
         Keeps only last 10 backups to prevent unbounded growth.
 
         Args:
             client_id (str): Client ID
-            file_path (Path): Path to file to backup
+            file_path (str): Store path of the file to back up
             file_type (str): Type of file (e.g., "shopify_config")
         """
         try:
-            backup_dir = self.clients_dir / f"CLIENT_{client_id}" / "backups"
-            backup_dir.mkdir(exist_ok=True)
+            backup_dir = f"Clients/CLIENT_{client_id}/backups"
 
             # Microseconds, then a counter: two saves in one tick each keep
             # their backup (AUDIT-07-L6). Sorting stays oldest first, as "."
             # sorts before "_".
             timestamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S_%f")
-            backup_path = backup_dir / f"{file_type}_{timestamp}.json"
+            backup_name = f"{file_type}_{timestamp}.json"
             n = 0
-            while backup_path.exists():
+            while self.store.exists(f"{backup_dir}/{backup_name}"):
                 n += 1
-                backup_path = backup_dir / f"{file_type}_{timestamp}_{n}.json"
+                backup_name = f"{file_type}_{timestamp}_{n}.json"
 
-            shutil.copy2(file_path, backup_path)
+            self.store.write_bytes(f"{backup_dir}/{backup_name}", self.store.read_bytes(file_path))
 
             # Keep only last 10 backups
-            backups = sorted(backup_dir.glob(f"{file_type}_*.json"))
+            backups = sorted(
+                n for n in self.store.list_dir(backup_dir)
+                if n.startswith(f"{file_type}_") and n.endswith(".json")
+            )
             for old_backup in backups[:-10]:
-                old_backup.unlink()
+                self.store.delete(f"{backup_dir}/{old_backup}")
 
-            logger.debug(f"Backup created: {backup_path.name}")
+            logger.debug(f"Backup created: {backup_name}")
 
         except Exception as e:
             logger.warning(f"Failed to create backup: {e}")
@@ -1214,16 +1192,16 @@ class ProfileManager:
             ProfileManagerError: If save fails after retries
         """
         client_id = client_id.upper()
-        client_dir = self.clients_dir / f"CLIENT_{client_id}"
-        config_path = client_dir / "client_config.json"
+        client_dir = f"Clients/CLIENT_{client_id}"
+        config_path = f"{client_dir}/client_config.json"
 
-        if not client_dir.exists():
+        if not self.store.exists(client_dir):
             raise ProfileManagerError(
                 f"Client profile does not exist: CLIENT_{client_id}"
             )
 
         # Create backup before saving
-        if config_path.exists():
+        if self.store.exists(config_path):
             self._create_backup(client_id, config_path, "client_config")
 
         # Update timestamp
@@ -1231,7 +1209,7 @@ class ProfileManager:
         config["updated_by"] = os.environ.get("COMPUTERNAME", "Unknown")
 
         try:
-            atomic_write_json(config_path, config)
+            self.store.write_json(config_path, config)
         except Exception as e:  # see save_shopify_config
             error_msg = f"Failed to save client config for CLIENT_{client_id}: {e}"
             logger.exception(error_msg)
@@ -1395,9 +1373,9 @@ class ProfileManager:
 
         # Cache miss - calculate metadata
         start_time = time.time()
-        sessions_dir = self.sessions_dir / cache_key
+        sessions_dir = f"Sessions/{cache_key}"
 
-        if not sessions_dir.exists():
+        if not self.store.exists(sessions_dir):
             metadata = {
                 "total_sessions": 0,
                 "last_session_date": None,
@@ -1409,16 +1387,16 @@ class ProfileManager:
         try:
             session_folders = [
                 d
-                for d in sessions_dir.iterdir()
-                if d.is_dir() and re.match(r"\d{4}-\d{2}-\d{2}_\d+", d.name)
+                for d in self.store.list_dir(sessions_dir)
+                if re.match(r"\d{4}-\d{2}-\d{2}_\d+", d) and "." not in d  # files have extensions
             ]
 
             total_sessions = len(session_folders)
 
             last_session_date = None
             if session_folders:
-                latest = max(session_folders, key=lambda d: d.name)
-                date_part = latest.name.split("_")[0]
+                latest = max(session_folders)
+                date_part = latest.split("_")[0]
                 last_session_date = date_part
 
             metadata = {
@@ -1559,7 +1537,7 @@ class ProfileManager:
             Path: Path to client directory
         """
         client_id = client_id.upper()
-        return self.clients_dir / f"CLIENT_{client_id}"
+        return self.store.local_path(f"Clients/CLIENT_{client_id}")
 
     def client_exists(self, client_id: str) -> bool:
         """Check if client profile exists.
@@ -1571,5 +1549,4 @@ class ProfileManager:
             bool: True if client exists
         """
         client_id = client_id.upper()
-        client_dir = self.clients_dir / f"CLIENT_{client_id}"
-        return client_dir.exists()
+        return self.store.exists(f"Clients/CLIENT_{client_id}")

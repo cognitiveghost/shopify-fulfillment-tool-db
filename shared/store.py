@@ -7,12 +7,13 @@ and a Store-based PC agree on a share.
 import json
 import os
 import shutil
-import time
 import tempfile
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable
+from typing import Any
 
 from shared.atomic_write import atomic_write_json, replace_with_retry
 from shared.file_lock import FileLockError, locked_file
@@ -95,6 +96,10 @@ class Store:
         raise NotImplementedError
 
     def local_path(self, rel: str) -> Path:
+        raise NotImplementedError
+
+    def stamp(self, rel: str) -> object:
+        """Opaque change token (compare with ==); StoreNotFound if absent, StoreError on other OSErrors."""
         raise NotImplementedError
 
 
@@ -192,6 +197,14 @@ class FileStore(Store):
 
     def local_path(self, rel):
         return self._p(rel)
+
+    def stamp(self, rel):
+        try:
+            return self._p(rel).stat().st_mtime_ns
+        except FileNotFoundError:
+            raise StoreNotFound(rel) from None
+        except OSError as e:
+            raise StoreError(rel) from e
 
     # --- list locks (.session.lock, same JSON as the Packer's SessionLockManager) ---
     def _lock_path(self, list_dir):

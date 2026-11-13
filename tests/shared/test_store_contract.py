@@ -1,5 +1,5 @@
 import threading
-from datetime import timedelta
+from datetime import UTC, timedelta
 
 import pytest
 
@@ -155,8 +155,8 @@ def test_lock_file_compat_with_packer_format(store, tmp_path):
 def test_lock_ops_on_absent_lock(store):
     assert not store.heartbeat_list_lock(LIST, "pc1")
     store.release_list_lock(LIST, "pc1")
-    from datetime import datetime, timezone
-    assert not store.force_take_list_lock(LIST, "pc1", "a", datetime.now(timezone.utc))
+    from datetime import datetime
+    assert not store.force_take_list_lock(LIST, "pc1", "a", datetime.now(UTC))
 
 
 def test_corrupt_json_raises_store_error(store):
@@ -194,3 +194,15 @@ def test_lock_same_pc_other_process_refused(store, tmp_path):
 def test_list_dir_on_a_file_is_empty(store):
     store.write_bytes("f", b"x")
     assert store.list_dir("f") == []
+
+
+def test_stamp_changes_on_rewrite_and_missing_raises(store):
+    import time
+
+    with pytest.raises(StoreNotFound):
+        store.stamp("s.json")
+    store.write_json("s.json", {"v": 1})
+    first = store.stamp("s.json")
+    time.sleep(0.05)  # coarse filesystem timestamps
+    store.write_json("s.json", {"v": 2, "more": "content"})
+    assert store.stamp("s.json") != first

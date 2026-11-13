@@ -23,6 +23,7 @@ from test_stale_session import (  # noqa: F401  main_window is a fixture
 
 import gui.main_window_pyside as main_window_module
 from gui.report_selection_dialog import GenerateReportsDialog
+from shared.store import FileStore
 from shopify_tool import core, report_jobs
 
 
@@ -332,7 +333,7 @@ def test_audit_10_10_editing_a_group_without_changes_saves_nothing(qapp, tmp_pat
     import gui.groups_management_dialog as groups_dialog
     from shopify_tool.groups_manager import GroupsManager
 
-    groups = GroupsManager(base_path=str(tmp_path))
+    groups = GroupsManager(FileStore(tmp_path))
     groups.create_group("Bulk", "#FF0000")
     toasts = []
     monkeypatch.setattr(groups_dialog, "toast", lambda _w, text, **k: toasts.append(text))

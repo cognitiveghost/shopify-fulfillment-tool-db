@@ -11,19 +11,19 @@ Key Features:
     - UUID-based group identification
 """
 
-import contextlib
 import json
 import logging
-import os
-import shutil
 import uuid
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
-from shared.atomic_write import atomic_write_json
+from shared.store import Store, StoreError, StoreNotFound
 
 logger = logging.getLogger("ShopifyToolLogger")
+
+GROUPS = "Clients/groups.json"
+GROUPS_CORRUPTED = "Clients/groups.corrupted.bak"
+BACKUPS = "Clients/backups"
 
 
 # Custom Exception
@@ -42,19 +42,16 @@ class GroupsManager:
     - Coordination with ProfileManager for client unassignment
 
     Attributes:
-        base_path (Path): Root path on file server
-        groups_path (Path): Path to groups.json file
+        store (Store): Server storage; groups live at Clients/groups.json
     """
 
-    def __init__(self, base_path: str):
-        """Initialize GroupsManager with base path to fulfillment directory.
+    def __init__(self, store: Store):
+        """Initialize GroupsManager on the server store.
 
         Args:
-            base_path: Base path to fulfillment directory
+            store: Store rooted at the fulfillment directory
         """
-        self.base_path = Path(base_path)
-        self.clients_dir = self.base_path / "Clients"
-        self.groups_path = self.clients_dir / "groups.json"
+        self.store = store
 
         # Ensure Clients directory exists. Best-effort: MainWindow can now
         # construct this against an unreachable share (ProfileManager's
@@ -63,9 +60,9 @@ class GroupsManager:
         # load_groups() already tolerates a missing groups_path -- it is the
         # mkdir itself that has no guard.
         try:
-            self.clients_dir.mkdir(parents=True, exist_ok=True)
+            self.store.claim_dir("Clients")  # False when it already exists
         except OSError:
-            logger.warning(f"Cannot reach clients directory at {self.clients_dir}")
+            logger.warning("Cannot reach clients directory")
             return
 
         # Initialize groups file
@@ -73,7 +70,7 @@ class GroupsManager:
         groups_data = self.load_groups()
 
         # If we got defaults back and file doesn't exist, save it
-        if not self.groups_path.exists():
+        if not self.store.exists(GROUPS):
             self.save_groups(groups_data)
 
     def _create_default_groups(self) -> dict[str, Any]:
@@ -115,33 +112,43 @@ class GroupsManager:
         Note:
             Returns defaults if file doesn't exist or is corrupted
         """
-        if not self.groups_path.exists():
+        if not self.store.exists(GROUPS):
             logger.info("groups.json not found, creating with defaults")
             return self._create_default_groups()
 
         try:
-            with open(self.groups_path, "r", encoding="utf-8") as f:
-                groups_data = json.load(f)
-
-            # Validate structure
-            if "version" not in groups_data or "groups" not in groups_data:
-                logger.warning("Invalid groups.json structure, recreating")
-                backup_path = self.groups_path.with_suffix(".corrupted.bak")
-                shutil.copy2(self.groups_path, backup_path)
-                logger.info(f"Corrupted file backed up to {backup_path}")
-                return self._create_default_groups()
-
-            return groups_data
-
-        except json.JSONDecodeError:
-            logger.exception("Corrupted JSON in groups.json")
-            backup_path = self.groups_path.with_suffix(".corrupted.bak")
-            shutil.copy2(self.groups_path, backup_path)
-            logger.info(f"Corrupted file backed up to {backup_path}")
+            groups_data = self.store.read_json(GROUPS)
+        except StoreNotFound:
+            return self._create_default_groups()
+        except StoreError as e:
+            if isinstance(e.__cause__, json.JSONDecodeError):
+                logger.exception("Corrupted JSON in groups.json")
+                self._back_up_corrupted()
+            else:
+                logger.exception("Unexpected error loading groups")
             return self._create_default_groups()
         except Exception:
             logger.exception("Unexpected error loading groups")
             return self._create_default_groups()
+        return self._validated(groups_data)
+
+    def _back_up_corrupted(self) -> None:
+        self.store.write_bytes(GROUPS_CORRUPTED, self.store.read_bytes(GROUPS))
+        logger.info(f"Corrupted file backed up to {GROUPS_CORRUPTED}")
+
+    def _validated(self, groups_data: Any) -> dict[str, Any]:
+        """The loaded document, or defaults (backing the file up) when its structure is wrong."""
+        if groups_data is None:
+            return self._create_default_groups()
+        try:
+            if "version" not in groups_data or "groups" not in groups_data:
+                logger.warning("Invalid groups.json structure, recreating")
+                self._back_up_corrupted()
+                return self._create_default_groups()
+        except Exception:
+            logger.exception("Unexpected error loading groups")
+            return self._create_default_groups()
+        return groups_data
 
     def save_groups(self, groups_data: dict[str, Any]) -> bool:
         """Save groups configuration atomically, with a backup.
@@ -157,16 +164,11 @@ class GroupsManager:
         Raises:
             GroupsManagerError: If the write fails
         """
-        # Create backup before saving
-        if self.groups_path.exists():
-            self._create_backup()
-
-        # Update timestamp
-        groups_data["last_updated"] = datetime.now().astimezone().isoformat()
+        self._prepare_save(groups_data)
 
         try:
-            atomic_write_json(self.groups_path, groups_data)
-        # atomic_write_json re-raises whatever failed, which is not always OSError.
+            self.store.write_json(GROUPS, groups_data)
+        # the write re-raises whatever failed, which is not always OSError.
         except Exception as e:
             error_msg = f"Failed to save groups configuration: {e}"
             logger.exception(error_msg)
@@ -175,67 +177,70 @@ class GroupsManager:
         logger.info("Groups configuration saved")
         return True
 
+    def _prepare_save(self, groups_data: dict[str, Any]) -> None:
+        """Back up the current file and stamp the document that replaces it."""
+        if self.store.exists(GROUPS):
+            self._create_backup()
+        groups_data["last_updated"] = datetime.now().astimezone().isoformat()
+
     def _create_backup(self) -> None:
         """Create backup of groups.json before destructive operations.
 
-        Keeps last 10 backups.
+        Keeps last 10 backups. Names carry a sortable timestamp, so name order is age order.
         """
-        if not self.groups_path.exists():
+        if not self.store.exists(GROUPS):
             return
 
-        backups_dir = self.clients_dir / "backups"
-        backups_dir.mkdir(exist_ok=True)
-
         timestamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
-        backup_path = backups_dir / f"groups_{timestamp}.json"
+        name = f"groups_{timestamp}.json"
 
         try:
-            shutil.copy2(self.groups_path, backup_path)
-            logger.info(f"Backup created: {backup_path.name}")
+            self.store.write_bytes(f"{BACKUPS}/{name}", self.store.read_bytes(GROUPS))
+            logger.info(f"Backup created: {name}")
 
             # Keep only last 10 backups
             backups = sorted(
-                backups_dir.glob("groups_*.json"),
-                key=lambda p: p.stat().st_mtime,
+                (n for n in self.store.list_dir(BACKUPS) if n.startswith("groups_") and n.endswith(".json")),
                 reverse=True,
             )
             for old_backup in backups[10:]:
-                old_backup.unlink()
-                logger.debug(f"Removed old backup: {old_backup.name}")
+                self.store.delete(f"{BACKUPS}/{old_backup}")
+                logger.debug(f"Removed old backup: {old_backup}")
 
         except Exception as e:
             logger.warning(f"Failed to create backup: {e}")
 
-    @contextlib.contextmanager
-    def _locked_groups_rmw(self):
-        """Blocking exclusive lock spanning a groups.json load-modify-save cycle.
+    def _modify(self, mutate):
+        """Load-modify-save under the store's lock: ``mutate(groups_data)`` returns the call's result.
 
-        save_groups() only locks around its own write; without this, two
-        near-simultaneous create/update/delete calls can each load the same
-        stale snapshot and the second save silently clobbers the first.
+        save_groups() alone would let two near-simultaneous create/update/delete calls each
+        load the same stale snapshot and the second save silently clobber the first.
         """
-        lock_path = self.groups_path.with_suffix(".lock")
-        with open(lock_path, "a+") as lock_file:
+        result = []
+
+        def fn(current):
+            groups_data = self._validated(current)
+            result.append(mutate(groups_data))
+            self._prepare_save(groups_data)
+            return groups_data
+
+        try:
             try:
-                if os.name == "nt":
-                    import msvcrt
-
-                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
-                else:
-                    import fcntl
-
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-                yield
-            finally:
-                if os.name == "nt":
-                    import msvcrt
-
-                    lock_file.seek(0)
-                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                self.store.update_json(GROUPS, fn)
+            except StoreError as e:
+                if not isinstance(e.__cause__, json.JSONDecodeError):
+                    raise
+                logger.exception("Corrupted JSON in groups.json")
+                self._back_up_corrupted()
+                self.store.delete(GROUPS)
+                result.clear()
+                self.store.update_json(GROUPS, fn)
+        except StoreError as e:
+            error_msg = f"Failed to save groups configuration: {e}"
+            logger.exception(error_msg)
+            raise GroupsManagerError(error_msg) from e
+        logger.info("Groups configuration saved")
+        return result[-1]
 
     @staticmethod
     def _name_collides_with_special_group(
@@ -265,10 +270,7 @@ class GroupsManager:
 
         name = name.strip()
 
-        with self._locked_groups_rmw():
-            # Load current groups
-            groups_data = self.load_groups()
-
+        def mutate(groups_data):
             # Check for duplicate name (including built-in special groups)
             if self._name_collides_with_special_group(groups_data, name):
                 raise GroupsManagerError(f"Group with name '{name}' already exists")
@@ -296,12 +298,11 @@ class GroupsManager:
             }
 
             groups_data["groups"].append(new_group)
-
-            # Save
-            self.save_groups(groups_data)
-            logger.info(f"Group created: {name} (ID: {group_id})")
-
             return group_id
+
+        group_id = self._modify(mutate)
+        logger.info(f"Group created: {name} (ID: {group_id})")
+        return group_id
 
     def update_group(
         self, group_id: str, name: str | None = None, color: str | None = None
@@ -319,10 +320,8 @@ class GroupsManager:
         Raises:
             GroupsManagerError: If group doesn't exist or name is duplicate
         """
-        with self._locked_groups_rmw():
-            # Load current groups
-            groups_data = self.load_groups()
-
+        def mutate(groups_data):
+            nonlocal name
             # Find group
             target_group = None
             for group in groups_data.get("groups", []):
@@ -356,11 +355,9 @@ class GroupsManager:
             if color is not None:
                 target_group["color"] = color
 
-            # Save
-            self.save_groups(groups_data)
-            logger.info(f"Group updated: {group_id}")
-
-            return True
+        self._modify(mutate)
+        logger.info(f"Group updated: {group_id}")
+        return True
 
     def delete_group(self, group_id: str, profile_manager=None) -> bool:
         """Delete group and unassign all clients.
@@ -380,10 +377,7 @@ class GroupsManager:
         if group_id in ["pinned", "all"]:
             raise GroupsManagerError(f"Cannot delete special group: {group_id}")
 
-        with self._locked_groups_rmw():
-            # Load current groups
-            groups_data = self.load_groups()
-
+        def mutate(groups_data):
             # Check if group exists
             group_exists = any(
                 group.get("id") == group_id for group in groups_data.get("groups", [])
@@ -417,11 +411,9 @@ class GroupsManager:
                 g for g in groups_data["groups"] if g.get("id") != group_id
             ]
 
-            # Save
-            self.save_groups(groups_data)
-            logger.info(f"Group deleted: {group_id}")
-
-            return True
+        self._modify(mutate)
+        logger.info(f"Group deleted: {group_id}")
+        return True
 
     def get_group(self, group_id: str) -> dict[str, Any] | None:
         """Get group by ID.
