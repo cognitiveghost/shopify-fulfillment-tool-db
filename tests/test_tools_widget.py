@@ -15,6 +15,7 @@ from test_reference_tool import Pool
 from gui import tools_widget
 from gui.setup_state import SessionFacts
 from gui.tools_widget import ToolsWidget
+from shared.store import FileStore
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -23,13 +24,15 @@ def qapp():
 
 
 @pytest.fixture
-def window():
-    """What ToolsWidget reads from the main window."""
+def window(tmp_path):
+    """What ToolsWidget reads from the main window. The store is rooted where
+    the test sessions live, so the barcode tool reads the lists there."""
     return SimpleNamespace(
         session_path=None,
         session_facts=None,
         current_client_id="ACME",
         analysis_results_df=None,
+        profile_manager=SimpleNamespace(store=FileStore(tmp_path)),
     )
 
 

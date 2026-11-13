@@ -1,9 +1,9 @@
-import os
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from shared.store import FileStore
 from shopify_tool.stock_export import prepare_export_path
 
 NOW = datetime(2026, 9, 25, 14, 5, tzinfo=UTC)
@@ -15,19 +15,19 @@ def touch(d, *names):
 
 
 def test_name_is_stem_date_and_minute(tmp_path):
-    out = prepare_export_path(str(tmp_path / "ALL_ORDERS_ALMADERM.xls"), NOW)
+    out = prepare_export_path(FileStore(tmp_path), "ALL_ORDERS_ALMADERM.xls", NOW)
     assert Path(out).name == "ALL_ORDERS_ALMADERM_2026-09-25_1405.xls"
 
 
 def test_a_legacy_datestamp_in_the_stem_is_replaced(tmp_path):
-    out = prepare_export_path(str(tmp_path / "ALL_2026-09-24.xls"), NOW)
+    out = prepare_export_path(FileStore(tmp_path), "ALL_2026-09-24.xls", NOW)
     assert Path(out).name == "ALL_2026-09-25_1405.xls"
 
 
 def test_every_earlier_version_moves_to_old(tmp_path):
     touch(tmp_path, "ALL.xls", "ALL_2026-09-24.xls", "ALL_2026-09-24_0900.xls",
           "ALL_2026-09-24_0900_packaging.xls", "ALL_DHL.xls", "notes.txt")
-    prepare_export_path(str(tmp_path / "ALL.xls"), NOW)
+    prepare_export_path(FileStore(tmp_path), "ALL.xls", NOW)
     assert sorted(p.name for p in (tmp_path / "old").iterdir()) == [
         "ALL.xls", "ALL_2026-09-24.xls", "ALL_2026-09-24_0900.xls",
         "ALL_2026-09-24_0900_packaging.xls"]
@@ -37,7 +37,7 @@ def test_every_earlier_version_moves_to_old(tmp_path):
 
 def test_regex_characters_in_the_name_are_literal(tmp_path):
     touch(tmp_path, "ALL (DHL)+.xls", "ALL (DHL)+_2026-09-24_0900.xls", "ALL DHL.xls")
-    out = prepare_export_path(str(tmp_path / "ALL (DHL)+.xls"), NOW)
+    out = prepare_export_path(FileStore(tmp_path), "ALL (DHL)+.xls", NOW)
     assert Path(out).name == "ALL (DHL)+_2026-09-25_1405.xls"
     assert sorted(p.name for p in (tmp_path / "old").iterdir()) == [
         "ALL (DHL)+.xls", "ALL (DHL)+_2026-09-24_0900.xls"]
@@ -48,27 +48,27 @@ def test_same_minute_re_export_archives_the_first(tmp_path):
     touch(tmp_path, "ALL_2026-09-25_1405.xls")
     (tmp_path / "old").mkdir()
     touch(tmp_path / "old", "ALL_2026-09-25_1405.xls")
-    out = prepare_export_path(str(tmp_path / "ALL.xls"), NOW)
-    assert not Path(out).exists()
+    out = prepare_export_path(FileStore(tmp_path), "ALL.xls", NOW)
+    assert not (tmp_path / out).exists()
     assert (tmp_path / "old" / "ALL_2026-09-25_1405.xls").exists()
 
 
 def test_a_locked_earlier_version_raises(tmp_path, monkeypatch):
     touch(tmp_path, "ALL.xls")
 
-    def locked(src, dst):
+    def locked(self, src, dst):
         raise PermissionError(13, "in use", src)
 
-    monkeypatch.setattr(os, "replace", locked)
+    monkeypatch.setattr(FileStore, "move", locked)
     with pytest.raises(PermissionError):
-        prepare_export_path(str(tmp_path / "ALL.xls"), NOW)
+        prepare_export_path(FileStore(tmp_path), "ALL.xls", NOW)
 
 
 def test_a_same_minute_re_export_keeps_both_archived_copies(tmp_path):
     """AUDIT-09-O8: the second move to old/ overwrote the first copy."""
-    base = str(tmp_path / "ALL.xls")
+    store = FileStore(tmp_path)
     for content in (b"first", b"second", b"third"):
-        Path(prepare_export_path(base, NOW)).write_bytes(content)
+        store.write_bytes(prepare_export_path(store, "ALL.xls", NOW), content)
     old = sorted((tmp_path / "old").iterdir())
     assert sorted(p.read_bytes() for p in old) == [b"first", b"second"]
     assert [p.read_bytes() for p in tmp_path.glob("*.xls")] == [b"third"]

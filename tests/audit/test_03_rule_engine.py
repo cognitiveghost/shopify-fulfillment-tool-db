@@ -12,6 +12,7 @@ import pytest
 from gui.rule_validator import validate_range
 from gui.settings.rule_test import run_rule_test
 from gui.settings.rules_state import RulesDraft
+from shared.store import FileStore
 from shopify_tool import core
 from shopify_tool.report_filters import fulfillable_only
 from shopify_tool.rules import (
@@ -89,7 +90,7 @@ def _run_with_bonus(tmp_path, bonus_stock):
                        level="article")],
     }
     orders_df, stock_df = core._load_and_validate_files(
-        str(tmp_path / "stock.csv"), str(tmp_path / "orders.csv"), ",", ",", config)
+        str(tmp_path / "stock.csv"), str(tmp_path / "orders.csv"), ",", ",", config, FileStore(tmp_path))
     history = pd.DataFrame(columns=["Order_Number", "Execution_Date"])
     final_df = core._run_analysis_and_rules(orders_df, stock_df, history, config)[0]
     return final_df, stock_df

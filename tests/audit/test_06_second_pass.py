@@ -15,6 +15,7 @@ import pytest
 
 from gui.actions_handler import ActionsHandler
 from gui.selection_helper import SelectionHelper
+from shared.store import FileStore
 from shopify_tool import analysis, core, fulfillment_history
 from shopify_tool.analysis import run_analysis, toggle_order_fulfillment
 from shopify_tool.packing_lists import create_packing_list
@@ -96,7 +97,7 @@ def refresh(mw, lots, config=CONFIG):
 
 def export_rows(df, tmp_path):
     out = tmp_path / "e.xls"
-    create_stock_export(df, str(out))
+    create_stock_export(FileStore(out.parent), df, out.name)
     e = pd.read_excel(out, dtype={"Артикул": str, "Годност": str, "Партида": str}).fillna("")
     return sorted(zip(e["Артикул"], e["Годност"], e["Партида"], e["Брой"]))
 
@@ -144,7 +145,7 @@ def test_packing_list_prints_each_lines_own_quantity(tmp_path):
     remove(mw, "#1", "L")
     add(mw, "#1", "L")
     out = refresh(mw, lots_of(st))
-    create_packing_list(out, str(tmp_path / "p.xlsx"))
+    create_packing_list(FileStore(tmp_path), out, "p.xlsx")
     x = pd.read_excel(tmp_path / "p.xlsx", dtype={"Order_Number": str, "SKU": str})
     assert x.groupby("SKU")["Quantity"].sum().to_dict() == {"L": 1, "S": 1}
     assert export_rows(out, tmp_path) == [("L", "", "", 1), ("S", "", "", 1)]
@@ -295,7 +296,7 @@ def test_summary_present_and_stats_follow_rule_holds(tmp_path):
         "match": "ALL", "actions": [{"type": "SET_STATUS", "value": "Not Fulfillable"}]}]}
     config = {"column_mappings": maps, "settings": {}, "rules": [hold]}
     orders_df, stock_df = core._load_and_validate_files(
-        str(tmp_path / "stock.csv"), str(tmp_path / "orders.csv"), ",", ",", config)
+        str(tmp_path / "stock.csv"), str(tmp_path / "orders.csv"), ",", ",", config, FileStore(tmp_path))
     history = pd.DataFrame(columns=["Order_Number", "Execution_Date"])
     _final, present, stats = core._run_analysis_and_rules(orders_df, stock_df, history, config)
     assert present.set_index("SKU")["Total Quantity"].to_dict() == {"A": 1}

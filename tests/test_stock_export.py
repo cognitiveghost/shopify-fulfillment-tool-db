@@ -10,6 +10,7 @@ from typing import ClassVar
 import pandas as pd
 import pytest
 
+from shared.store import FileStore
 from shopify_tool.stock_export import (
     _finalize_export_df,
     _to_erp_quantity,
@@ -60,7 +61,7 @@ class TestBasicExport:
             ]
         )
         out = tmp_path / "export.xls"
-        create_stock_export(df, str(out))
+        create_stock_export(FileStore(out.parent), df, out.name)
         result = _read(out)
         assert len(result) == 1
         assert result.iloc[0, COL_SKU] == "A1"
@@ -69,7 +70,7 @@ class TestBasicExport:
     def test_canonical_column_layout(self, tmp_path):
         df = _analysis_df([{"SKU": "A1", "Quantity": 1}])
         out = tmp_path / "export.xls"
-        create_stock_export(df, str(out))
+        create_stock_export(FileStore(out.parent), df, out.name)
         result = _read(out)
         assert result.iloc[0, COL_UNIT] == "брой"
 
@@ -81,7 +82,7 @@ class TestBasicExport:
             ]
         )
         out = tmp_path / "export.xls"
-        create_stock_export(df, str(out))
+        create_stock_export(FileStore(out.parent), df, out.name)
         result = _read(out)
         totals = dict(zip(result.iloc[:, COL_SKU], result.iloc[:, COL_QTY]))
         assert totals == {"A1": 3, "A2": 5}
@@ -105,8 +106,7 @@ class TestBasicExport:
         )
         out = tmp_path / "export.xls"
         create_stock_export(
-            df,
-            str(out),
+            FileStore(out.parent), df, out.name,
             filters=[{"field": "Shipping_Provider", "operator": "==", "value": "DHL"}],
         )
         result = _read(out)
@@ -115,7 +115,7 @@ class TestBasicExport:
     def test_empty_result_still_writes_canonical_headers(self, tmp_path):
         df = _analysis_df([{"Order_Fulfillment_Status": "Not Fulfillable"}])
         out = tmp_path / "export.xls"
-        create_stock_export(df, str(out))
+        create_stock_export(FileStore(out.parent), df, out.name)
         result = _read(out)
         assert result.empty
         assert list(result.columns)[COL_UNIT] == "Мярка"
@@ -138,7 +138,7 @@ class TestLotAggregation:
             ]
         )
         out = tmp_path / "export.xls"
-        create_stock_export(df, str(out))
+        create_stock_export(FileStore(out.parent), df, out.name)
         result = _read(out)
         assert len(result) == 2
         assert result.iloc[:, COL_QTY].sum() == 5
@@ -157,7 +157,7 @@ class TestLotAggregation:
             ]
         )
         out = tmp_path / "export.xls"
-        create_stock_export(df, str(out))
+        create_stock_export(FileStore(out.parent), df, out.name)
         result = _read(out)
         expiry_val = result.iloc[0, COL_EXPIRY]
         assert expiry_val == "" or pd.isna(expiry_val)
@@ -178,7 +178,7 @@ class TestLotAggregation:
             ]
         )
         out = tmp_path / "export.xls"
-        create_stock_export(df, str(out))
+        create_stock_export(FileStore(out.parent), df, out.name)
         result = _read(out)
         assert result.iloc[0, COL_QTY] == 2
 
@@ -208,7 +208,7 @@ class TestConfirmedBugs:
             ]
         )
         out = tmp_path / "export.xls"
-        create_stock_export(df, str(out))
+        create_stock_export(FileStore(out.parent), df, out.name)
         result = _read(out)
         assert result.iloc[:, COL_QTY].sum() == 5  # currently only 3 (first row wins)
 
@@ -240,7 +240,7 @@ class TestMergeSessionStockExportsBug:
         s1, s2 = tmp_path / "s1", tmp_path / "s2"
         self._write_session(s1, [{"SKU": "A1", "Quantity": 3}])
         self._write_session(s2, [{"SKU": "A1", "Quantity": 2}])
-        result = merge_session_stock_exports([s1, s2], client_id="TEST")
+        result = merge_session_stock_exports(FileStore(tmp_path), [s1, s2], client_id="TEST")
         assert len(result[result.iloc[:, COL_SKU] == "A1"]) == 1
         assert result.iloc[0, COL_QTY] == 5
 
@@ -270,7 +270,7 @@ class TestMergeSessionStockExportsBug:
                 }
             ],
         )
-        result = merge_session_stock_exports([s1, s2], client_id="TEST")
+        result = merge_session_stock_exports(FileStore(tmp_path), [s1, s2], client_id="TEST")
         a1_rows = result[result.iloc[:, COL_SKU] == "A1"]
         assert len(a1_rows) == 1
         assert a1_rows.iloc[0, COL_QTY] == 5
@@ -356,7 +356,7 @@ class TestQuantityRounding:
             ]
         )
         out = tmp_path / "export.xls"
-        create_stock_export(df, str(out), writeoff_mode="merged", tag_categories=config)
+        create_stock_export(FileStore(out.parent), df, out.name, writeoff_mode="merged", tag_categories=config)
         result = _read(out)
         packaging = result[result.iloc[:, COL_SKU] == "PKG-BOX"]
         assert len(packaging) == 1
@@ -399,7 +399,7 @@ class TestQuantityRounding:
             ]
         )
         out = tmp_path / "export.xls"
-        create_stock_export(df, str(out), writeoff_mode="merged", tag_categories=config)
+        create_stock_export(FileStore(out.parent), df, out.name, writeoff_mode="merged", tag_categories=config)
         result = _read(out)
         packaging = result[result.iloc[:, COL_SKU] == "PKG-BOX"]
         assert packaging.iloc[0, COL_QTY] == 2
@@ -432,7 +432,7 @@ class TestQuantityRounding:
             ]
         )
         out = tmp_path / "export.xls"
-        create_stock_export(df, str(out), writeoff_mode="merged", tag_categories=config)
+        create_stock_export(FileStore(out.parent), df, out.name, writeoff_mode="merged", tag_categories=config)
         result = _read(out)
         assert "PKG-TAPE" not in set(result.iloc[:, COL_SKU])
         assert (result.iloc[:, COL_QTY] > 0).all()
@@ -469,8 +469,8 @@ class TestWriteoffModes:
     def test_separate_mode_writes_packaging_to_its_own_file(self, tmp_path):
         out = tmp_path / "export.xls"
         returned = create_stock_export(
-            self._df(),
-            str(out),
+            FileStore(out.parent), self._df(),
+            out.name,
             writeoff_mode="separate",
             tag_categories=self.CONFIG,
         )
@@ -489,7 +489,7 @@ class TestWriteoffModes:
     def test_separate_mode_with_no_packaging_writes_one_file(self, tmp_path):
         out = tmp_path / "export.xls"
         returned = create_stock_export(
-            self._df(), str(out), writeoff_mode="separate", tag_categories={}
+            FileStore(out.parent), self._df(), out.name, writeoff_mode="separate", tag_categories={}
         )
         assert out.exists()
         assert not (tmp_path / "export_packaging.xls").exists()
@@ -505,15 +505,15 @@ class TestWriteoffModes:
         out = tmp_path / "export.xls"
         packaging = tmp_path / "export_packaging.xls"
         create_stock_export(
-            self._df(),
-            str(out),
+            FileStore(out.parent), self._df(),
+            out.name,
             writeoff_mode="separate",
             tag_categories=self.CONFIG,
         )
         assert packaging.exists()
 
         create_stock_export(
-            self._df(), str(out), writeoff_mode="off", tag_categories=self.CONFIG
+            FileStore(out.parent), self._df(), out.name, writeoff_mode="off", tag_categories=self.CONFIG
         )
         assert not packaging.exists()
 
@@ -528,16 +528,16 @@ class TestWriteoffModes:
         real = mod._write_xls
         out = tmp_path / "export.xls"
 
-        def explode(df, path):
+        def explode(store, df, path):
             if str(path).endswith("_packaging.xls"):
                 raise PermissionError(path)
-            return real(df, path)
+            return real(store, df, path)
 
         monkeypatch.setattr(mod, "_write_xls", explode)
         with pytest.raises(PermissionError):
             create_stock_export(
-                self._df(),
-                str(out),
+                FileStore(out.parent), self._df(),
+                out.name,
                 writeoff_mode="separate",
                 tag_categories=self.CONFIG,
             )
@@ -550,8 +550,8 @@ class TestWriteoffModes:
     def test_merged_mode_keeps_both_in_one_file(self, tmp_path):
         out = tmp_path / "export.xls"
         create_stock_export(
-            self._df(),
-            str(out),
+            FileStore(out.parent), self._df(),
+            out.name,
             writeoff_mode="merged",
             tag_categories=self.CONFIG,
         )
@@ -561,8 +561,8 @@ class TestWriteoffModes:
     def test_off_mode_leaves_packaging_out_entirely(self, tmp_path):
         out = tmp_path / "export.xls"
         create_stock_export(
-            self._df(),
-            str(out),
+            FileStore(out.parent), self._df(),
+            out.name,
             writeoff_mode="off",
             tag_categories=self.CONFIG,
         )
@@ -587,8 +587,7 @@ def test_not_in_filter_excludes_the_listed_skus(tmp_path):
     out = tmp_path / "notin.xls"
 
     create_stock_export(
-        df,
-        str(out),
+        FileStore(out.parent), df, out.name,
         filters=[{"field": "SKU", "operator": "not in", "value": "AB-01,CD-02"}],
     )
 
@@ -612,7 +611,7 @@ def test_failed_xls_write_leaves_the_previous_file_intact(tmp_path, monkeypatch)
     monkeypatch.setattr(os, "replace", boom)
     df = pd.DataFrame({"Артикул": ["A"], stock_export.QTY_COL: [1]})
     with pytest.raises(OSError):
-        stock_export._write_xls(df, str(target))
+        stock_export._write_xls(FileStore(target.parent), df, target.name)
     assert target.read_bytes() == b"previous"
     assert [p.name for p in tmp_path.iterdir()] == ["e.xls"]  # temp file cleaned up
 
@@ -630,7 +629,7 @@ def test_a_locked_export_names_the_export_not_the_temp_file(tmp_path, monkeypatc
     monkeypatch.setattr(os, "replace", locked)
     df = pd.DataFrame({"Артикул": ["A"], stock_export.QTY_COL: [1]})
     with pytest.raises(PermissionError) as err:
-        stock_export._write_xls(df, str(target))
+        stock_export._write_xls(FileStore(target.parent), df, target.name)
     assert err.value.filename == str(target)
     assert list(tmp_path.iterdir()) == []
 
@@ -642,7 +641,7 @@ class TestLotLabelsFollowQuantity:
         lots = [{"expiry": "260601", "batch": "B1", "qty_allocated": 3}]
         df = _analysis_df([{"Order_Number": "#1", "SKU": "A1", "Quantity": 1, "Lot_Details": lots}])
         out = tmp_path / "e.xls"
-        create_stock_export(df, str(out))
+        create_stock_export(FileStore(out.parent), df, out.name)
         result = _read(out)
         assert result.iloc[:, COL_QTY].tolist() == [1]
 
@@ -654,7 +653,7 @@ class TestLotLabelsFollowQuantity:
             {"Order_Number": "#1221", "SKU": "S", "Quantity": 1, "Lot_Details": lots},
         ])
         out = tmp_path / "e.xls"
-        create_stock_export(df, str(out))
+        create_stock_export(FileStore(out.parent), df, out.name)
         result = _read(out)
         totals = dict(zip(result.iloc[:, COL_SKU].astype(str), result.iloc[:, COL_QTY]))
         assert totals == {"L": 1, "S": 1}
@@ -672,7 +671,7 @@ class TestTotalsGuard:
         )
         out = tmp_path / "e.xls"
         with pytest.raises(ValueError, match=r"A1 export 3, lines 2"):
-            create_stock_export(df, str(out))
+            create_stock_export(FileStore(out.parent), df, out.name)
         assert not out.exists()
 
     def test_a_dropped_sku_is_refused(self, tmp_path, monkeypatch):
@@ -688,7 +687,7 @@ class TestTotalsGuard:
             lambda items: se._finalize_export_df(pd.DataFrame({"Артикул": ["A1"], se.QTY_COL: [1]})),
         )
         with pytest.raises(ValueError, match=r"A2 export 0, lines 1"):
-            create_stock_export(df, str(tmp_path / "e.xls"))
+            create_stock_export(FileStore(tmp_path), df, "e.xls")
 
     def test_guard_accepts_numeric_skus(self, tmp_path):
         df = _analysis_df([
@@ -697,7 +696,7 @@ class TestTotalsGuard:
              "Lot_Details": [{"expiry": "1", "batch": None, "qty_allocated": 1}]},
         ])
         out = tmp_path / "e.xls"
-        create_stock_export(df, str(out))  # must not raise
+        create_stock_export(FileStore(out.parent), df, out.name)  # must not raise
         assert _read(out).iloc[:, COL_QTY].sum() == 3
 
     def test_guard_ignores_merged_packaging_rows(self, tmp_path):
@@ -717,7 +716,7 @@ class TestTotalsGuard:
             {"Order_Number": "#1", "SKU": "A1", "Quantity": 2, "Internal_Tags": '["BOX"]'},
         ])
         out = tmp_path / "e.xls"
-        create_stock_export(df, str(out), writeoff_mode="merged", tag_categories=tag_categories)
+        create_stock_export(FileStore(out.parent), df, out.name, writeoff_mode="merged", tag_categories=tag_categories)
         skus = set(_read(out).iloc[:, COL_SKU].astype(str))
         assert {"A1", "PKG-1"} <= skus
 
@@ -750,8 +749,8 @@ def test_the_stock_export_never_holds_a_negative_quantity(tmp_path, monkeypatch,
 
     frame = _negative_stock_frame(with_lots_column)
     written = []
-    monkeypatch.setattr(stock_export, "_write_xls", lambda df, path: written.append(df))
-    stock_export.create_stock_export(analysis_df=frame, output_file=str(tmp_path / "e.xls"),
+    monkeypatch.setattr(stock_export, "_write_xls", lambda store, df, path: written.append(df))
+    stock_export.create_stock_export(FileStore(tmp_path), analysis_df=frame, output_rel="e.xls",
                                      report_name="ERP", filters=[], writeoff_mode="off", tag_categories={})
     assert (written[0][stock_export.QTY_COL] > 0).all()
 
@@ -765,7 +764,7 @@ def test_a_merge_reads_the_run_report_when_the_pickle_is_unreadable(tmp_path):
     pd.DataFrame({"Order_Number": ["#1"], "SKU": ["A"], "Quantity": [2],
                   "Order_Fulfillment_Status": ["Fulfillable"]}).to_excel(
         session / "analysis" / "fulfillment_analysis.xlsx", index=False)
-    out = stock_export.merge_session_stock_exports([session])
+    out = stock_export.merge_session_stock_exports(FileStore(tmp_path), [session])
     assert out.loc[out["Артикул"] == "A", stock_export.QTY_COL].tolist() == [2]
 
 
@@ -774,10 +773,10 @@ def test_a_sku_with_a_trailing_space_is_one_export_row(tmp_path, monkeypatch):
     from shopify_tool import stock_export
 
     written = []
-    monkeypatch.setattr(stock_export, "_write_xls", lambda df, path: written.append(df))
+    monkeypatch.setattr(stock_export, "_write_xls", lambda store, df, path: written.append(df))
     frame = _analysis_df([{"Order_Number": "#1", "SKU": "A", "Quantity": 1},
                           {"Order_Number": "#2", "SKU": "A ", "Quantity": 2}])
-    stock_export.create_stock_export(analysis_df=frame, output_file=str(tmp_path / "e.xls"), report_name="ERP")
+    stock_export.create_stock_export(FileStore(tmp_path), analysis_df=frame, output_rel="e.xls", report_name="ERP")
     rows = written[0]
     assert rows["Артикул"].tolist() == ["A"]
     assert rows[stock_export.QTY_COL].tolist() == [3]
@@ -789,11 +788,11 @@ def test_a_sku_with_a_trailing_space_is_one_lot_export_row(tmp_path, monkeypatch
     from shopify_tool import stock_export
 
     written = []
-    monkeypatch.setattr(stock_export, "_write_xls", lambda df, path: written.append(df))
+    monkeypatch.setattr(stock_export, "_write_xls", lambda store, df, path: written.append(df))
     lot = [{"expiry": "2027-01-01", "batch": None, "qty_allocated": 3}]
     frame = _analysis_df([{"Order_Number": "#1", "SKU": "A", "Quantity": 3, "Lot_Details": lot},
                           {"Order_Number": "#2", "SKU": "A ", "Quantity": -1}])
-    stock_export.create_stock_export(analysis_df=frame, output_file=str(tmp_path / "e.xls"), report_name="ERP")
+    stock_export.create_stock_export(FileStore(tmp_path), analysis_df=frame, output_rel="e.xls", report_name="ERP")
     rows = written[0]
     assert rows["Артикул"].tolist() == ["A"]
     assert rows[stock_export.QTY_COL].tolist() == [2]

@@ -1,4 +1,4 @@
-import json
+import io
 import logging
 import os
 import sys
@@ -37,7 +37,6 @@ from gui.session_write_queue import (
 from gui.ui_manager import UIManager
 from gui.web_page import when_painted
 from gui.worker import Worker
-from shared.atomic_write import atomic_write_json
 from shared.i18n import _
 from shared.update_flow import UpdateFlow
 from shared.updater import AppIdentity
@@ -77,7 +76,7 @@ def follow_inventory_memory(profile_manager, client_id: str, session_path: str, 
             f"Inventory memory belongs to {memory.get('session')!r}; not rewriting it from {this}"
         )
         return
-    baseline = core.read_memory_baseline(session_path)
+    baseline = core.read_memory_baseline(profile_manager.store, session_path)
     if baseline is None:
         return
     snapshot = core.build_inventory_snapshot(df, core.baseline_stock_df(baseline))
@@ -1025,8 +1024,9 @@ class MainWindow(QMainWindow):
         # current_state.pkl above is the state; this only mirrors it.
         if self.analysis_stats:
             stats = dict(self.analysis_stats)
-            stats_path = Path(session_path) / "analysis" / "analysis_stats.json"
-            submit_or_run(queue, session_path, ANALYSIS_STATS, lambda: atomic_write_json(stats_path, stats))
+            store = profile_manager.store
+            stats_rel = f"{session_state.session_rel(store, session_path)}/analysis/analysis_stats.json"
+            submit_or_run(queue, session_path, ANALYSIS_STATS, lambda: store.write_json(stats_rel, stats))
 
         # The browser's Blocked column reads these counts (AUDIT-05-6).
         session_manager = getattr(self, "session_manager", None)
@@ -1061,21 +1061,22 @@ class MainWindow(QMainWindow):
             del recorded[name]
         session_path = str(self.session_path)
         # A list already gone (withdrawn by a failed regeneration, or removed) has nothing to say.
-        lists_dir = Path(session_path) / "packing_lists"
-        out_of_date = [n for n in out_of_date if (lists_dir / f"{n}.json").exists()]
+        store = self.profile_manager.store
+        lists_dir = f"{session_state.session_rel(store, session_path)}/packing_lists"
+        out_of_date = [n for n in out_of_date if store.exists(f"{lists_dir}/{n}.json")]
         if not out_of_date:
             return
-        started = [n for n in out_of_date if (Path(session_path) / "packing" / n).exists()]
+        started = [n for n in out_of_date if store.exists(f"{session_state.session_rel(store, session_path)}/packing/{n}")]
         unstarted = [n for n in out_of_date if n not in started]
         if unstarted:
             session_manager = getattr(self, "session_manager", None)
 
             def withdraw():
-                report_jobs.withdraw_lists(session_path, unstarted)
+                report_jobs.withdraw_lists(store, session_path, unstarted)
                 if session_manager is not None:
-                    report_jobs.update_packing_list_statistics(session_manager, session_path)
+                    report_jobs.update_packing_list_statistics(store, session_manager, session_path)
                 # False makes the queue report it: a list left in place is still the Packer's.
-                return not any((lists_dir / f"{n}.json").exists() for n in unstarted)
+                return not any(store.exists(f"{lists_dir}/{n}.json") for n in unstarted)
 
             # The names are in the key: a pending withdrawal of other lists must not be replaced.
             kind = f"{PACKING_LISTS}:{', '.join(unstarted)}"
@@ -1111,26 +1112,25 @@ class MainWindow(QMainWindow):
             True if loaded successfully, False otherwise
         """
         try:
-            session_path = Path(session_path)
-            analysis_dir = session_path / "analysis"
+            store = self.profile_manager.store
+            analysis_dir = f"{session_state.session_rel(store, session_path)}/analysis"
 
             # Before the read: a write landing between the two makes the next
             # save refuse needlessly, never overwrite (ADR 0011).
-            self._state_stamp = session_state.state_stamp(self.profile_manager.store, session_path)
+            self._state_stamp = session_state.state_stamp(store, session_path)
 
             # Priority 1: Try loading from current_state.pkl
-            pkl_path = analysis_dir / "current_state.pkl"
-            if pkl_path.exists():
+            pkl_rel = f"{analysis_dir}/current_state.pkl"
+            if store.exists(pkl_rel):
                 try:
-                    logger.info(f"Loading session state from pickle: {pkl_path}")
-                    self.analysis_results_df = pd.read_pickle(pkl_path)
+                    logger.info(f"Loading session state from pickle: {pkl_rel}")
+                    self.analysis_results_df = pd.read_pickle(io.BytesIO(store.read_bytes(pkl_rel)))
 
                     # Load statistics from JSON if available
-                    stats_path = analysis_dir / "analysis_stats.json"
-                    if stats_path.exists():
-                        logger.info(f"Loading statistics from: {stats_path}")
-                        with open(stats_path, "r", encoding="utf-8") as f:
-                            self.analysis_stats = json.load(f)
+                    stats_rel = f"{analysis_dir}/analysis_stats.json"
+                    if store.exists(stats_rel):
+                        logger.info(f"Loading statistics from: {stats_rel}")
+                        self.analysis_stats = store.read_json(stats_rel)
                     else:
                         # Recalculate if stats file missing
                         logger.info("Statistics file not found - recalculating")
@@ -1152,29 +1152,29 @@ class MainWindow(QMainWindow):
             # edits. Not current_state.xlsx: it is no longer written, and an
             # old one can be older than the session's latest run (AUDIT-07-H2).
             # Check for analysis_data.json first (indicates analysis was completed)
-            analysis_data_file = analysis_dir / "analysis_data.json"
+            analysis_data_rel = f"{analysis_dir}/analysis_data.json"
 
-            if not analysis_data_file.exists():
-                logger.warning(f"Analysis data not found: {analysis_data_file}")
+            if not store.exists(analysis_data_rel):
+                logger.warning(f"Analysis data not found: {analysis_data_rel}")
                 return False
 
-            logger.info(f"Found analysis data: {analysis_data_file}")
+            logger.info(f"Found analysis data: {analysis_data_rel}")
 
             # Load the actual Excel report to get DataFrame
-            report_file = analysis_dir / "fulfillment_analysis.xlsx"
+            report_rel = f"{analysis_dir}/fulfillment_analysis.xlsx"
 
-            if not report_file.exists():
+            if not store.exists(report_rel):
                 # Try alternative name
-                report_file = analysis_dir / "analysis_report.xlsx"
+                report_rel = f"{analysis_dir}/analysis_report.xlsx"
 
-            if not report_file.exists():
-                logger.warning(f"Analysis report not found: {report_file}")
+            if not store.exists(report_rel):
+                logger.warning(f"Analysis report not found: {report_rel}")
                 return False
 
-            logger.info(f"Loading analysis from original report: {report_file}")
+            logger.info(f"Loading analysis from original report: {report_rel}")
 
             # Load DataFrame from Excel
-            self.analysis_results_df = pd.read_excel(report_file)
+            self.analysis_results_df = pd.read_excel(io.BytesIO(store.read_bytes(report_rel)))
 
             # Recalculate statistics (no saved stats for original report)
             self.analysis_stats = recalculate_statistics(self.analysis_results_df)
@@ -1210,10 +1210,12 @@ class MainWindow(QMainWindow):
         # There is no confirm on that path. Owner's call, 2026-09-20.
         for kind, default_name in (("stock", "inventory.csv"),):
             recorded = info.get(f"{kind}_file") or default_name
-            path = Path(input_dir) / recorded
-            if not path.exists():
+            store = self.profile_manager.store
+            rel = f"{session_state.session_rel(store, input_dir)}/{recorded}"
+            if not store.exists(rel):
                 continue
-            setattr(self, f"{kind}_file_path", str(path))
+            # The slot's validator reads the file by path, so it gets the store's local path.
+            setattr(self, f"{kind}_file_path", str(store.local_path(rel)))
             # validate_file drives the slot into its loaded or invalid face and
             # is the same call the file pickers make.
             self.file_handler.validate_file(kind)
@@ -1288,7 +1290,9 @@ class MainWindow(QMainWindow):
 
                 # Try to load analysis data if it exists
                 if self._load_session_analysis(session_path):
-                    self.lot_table = core.session_lot_table(session_path, self.active_profile_config)
+                    self.lot_table = core.session_lot_table(
+                        self.profile_manager.store, session_path, self.active_profile_config
+                    )
                     # Analysis loaded successfully; a session saved by an older
                     # build may hold a drifted Final_Stock (ADR 0010).
                     self.analysis_results_df = with_stock_left(self.analysis_results_df)

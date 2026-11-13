@@ -2,10 +2,6 @@
 # A file listed here is exempt from tests/test_store_guard.py as a whole. Reasons:
 #   TODO-migrate(4b|4c|4d) = belongs to a later Task 4 part; remove the line when migrated.
 #   anything else          = genuinely local file (export target, temp dir, app data, logs).
-shopify_tool/core.py:TODO-migrate(4c) analysis_stats.json / analysis_data under the session
-shopify_tool/report_jobs.py:TODO-migrate(4c) packing list json
-shopify_tool/stock_export.py:TODO-migrate(4c) stock export under base_path
-gui/main_window_pyside.py:TODO-migrate(4c) analysis_stats.json mirror in session folder (closest area; not in a brief list)
 shopify_tool/session_manager.py:session_index.json: FileStore-only derived cache, replaced by Store.query_sessions in Task 8
 shopify_tool/fulfillment_history.py:TODO-migrate(4d) per-client history file
 shared/stats_manager.py:TODO-migrate(4d) Stats/global_stats.json

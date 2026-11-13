@@ -64,7 +64,10 @@ class ToolsWidget(QWidget):
 
         self.reference = ReferenceTool(self, pool)
         self.barcode = BarcodeTool(
-            self, lambda: getattr(self.mw, "analysis_results_df", None), pool
+            self,
+            lambda: getattr(self.mw, "analysis_results_df", None),
+            lambda: self.mw.profile_manager.store,
+            pool,
         )
         for tool in (self.reference, self.barcode):
             tool.changed.connect(self._push)

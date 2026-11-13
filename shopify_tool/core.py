@@ -1,8 +1,8 @@
 import csv
+import io
 import json
 import logging
 import os
-import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -13,8 +13,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from shared.atomic_write import atomic_write_json
 from shared.i18n import N_
+from shared.store import StoreError
 
 from . import analysis, fulfillment_history, session_state
 from .csv_utils import AUTO_DELIMITER, normalize_sku, resolve_delimiter
@@ -520,19 +520,20 @@ def _validate_and_prepare_inputs(
     if use_session_mode and orders_file_path:
         try:
             # Copy input files to session/input/
-            input_dir = session_manager.get_input_dir(working_path)
+            store = session_manager.store
+            input_rel = session_state.session_rel(store, session_manager.get_input_dir(working_path))
 
             # Copy with standardized names
-            orders_dest = Path(input_dir) / "orders_export.csv"
+            orders_dest = f"{input_rel}/orders_export.csv"
 
-            logger.info(f"Copying orders file to: {orders_dest}")
-            shutil.copy2(orders_file_path, orders_dest)
+            logger.info(f"Copying orders file to: {store.local_path(orders_dest)}")
+            store.write_bytes(orders_dest, Path(orders_file_path).read_bytes())
 
             # Memory mode has no stock file
             if stock_file_path:
-                stock_dest = Path(input_dir) / "inventory.csv"
-                logger.info(f"Copying stock file to: {stock_dest}")
-                shutil.copy2(stock_file_path, stock_dest)
+                stock_dest = f"{input_rel}/inventory.csv"
+                logger.info(f"Copying stock file to: {store.local_path(stock_dest)}")
+                store.write_bytes(stock_dest, Path(stock_file_path).read_bytes())
 
             # Update session info with input file names
             session_manager.update_session_info(
@@ -584,6 +585,7 @@ def _load_and_validate_files(
     stock_delimiter: str,
     orders_delimiter: str,
     config: dict,
+    store,
     session_path: str | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Loads and validates CSV files.
@@ -733,7 +735,7 @@ def _load_and_validate_files(
             if inv_mem.get("enabled"):
                 # The session's own baseline, so a re-run never draws the
                 # session's orders from memory twice (ADR 0012).
-                baseline = read_memory_baseline(session_path)
+                baseline = read_memory_baseline(store, session_path)
                 if baseline is not None:
                     stock_df = baseline_stock_df(baseline)
                     config["_memory_baseline_reused"] = True
@@ -742,7 +744,7 @@ def _load_and_validate_files(
                     names = inv_mem.get("names") or {}
                     baseline = {"skus": skus, "names": names}
                     stock_df = baseline_stock_df(baseline)
-                    write_memory_baseline(session_path, skus, names)
+                    write_memory_baseline(store, session_path, skus, names)
                 config["_stock_from_memory"] = True
                 logger.info(f"Loaded {len(stock_df)} SKUs from inventory memory")
 
@@ -761,19 +763,18 @@ def _load_and_validate_files(
 BASELINE_FILE = "memory_baseline.json"
 
 
-def _baseline_path(session_path) -> Path:
-    return Path(session_path) / "analysis" / BASELINE_FILE
+def _baseline_rel(store, session_path) -> str:
+    return f"{session_state.session_rel(store, session_path)}/analysis/{BASELINE_FILE}"
 
 
-def read_memory_baseline(session_path) -> dict | None:
+def read_memory_baseline(store, session_path) -> dict | None:
     """The session's opening stock, {"skus": {...}, "names": {...}}, or None."""
     if not session_path:
         return None
     try:
-        with open(_baseline_path(session_path), encoding="utf-8") as f:
-            data = json.load(f)
+        data = store.read_json(_baseline_rel(store, session_path))
         return data if isinstance(data.get("skus"), dict) else None
-    except (OSError, ValueError, AttributeError):
+    except (StoreError, AttributeError):
         return None
 
 
@@ -788,14 +789,12 @@ def baseline_stock_df(baseline: dict) -> pd.DataFrame:
     )
 
 
-def write_memory_baseline(session_path, skus: dict, names: dict | None) -> None:
+def write_memory_baseline(store, session_path, skus: dict, names: dict | None) -> None:
     if session_path:
-        atomic_write_json(
-            _baseline_path(session_path), {"skus": skus, "names": names or {}}
-        )
+        store.write_json(_baseline_rel(store, session_path), {"skus": skus, "names": names or {}})
 
 
-def _discard_unsaved_baseline(config: dict, session_path) -> None:
+def _discard_unsaved_baseline(store, config: dict, session_path) -> None:
     """Remove the baseline a run wrote on load when it stops before it saves.
 
     Left behind, the next run would reuse it, and because memory still belongs
@@ -807,7 +806,7 @@ def _discard_unsaved_baseline(config: dict, session_path) -> None:
         and not config.get("_memory_baseline_reused")
     ):
         try:
-            _baseline_path(session_path).unlink(missing_ok=True)
+            store.delete(_baseline_rel(store, session_path))
         except OSError as e:
             logger.warning(f"Could not remove the unsaved memory baseline: {e}")
 
@@ -986,7 +985,7 @@ def _add_stock_alert(final_df, config):
         )
 
 
-def session_lot_table(session_path, config) -> dict | None:
+def session_lot_table(store, session_path, config) -> dict | None:
     """The session's opening lots (R3, ADR 0015), from its own input/inventory.csv.
 
     None when the session has no stock file (memory mode, or none copied),
@@ -995,22 +994,23 @@ def session_lot_table(session_path, config) -> dict | None:
     """
     if not session_path:
         return None
-    path = Path(session_path) / "input" / "inventory.csv"
-    if not path.exists():
+    rel = f"{session_state.session_rel(store, session_path)}/input/inventory.csv"
+    if not store.exists(rel):
         return None
     config = config or {}
     mappings = config.get("column_mappings") or {}
     try:
         setting = (config.get("settings") or {}).get("stock_csv_delimiter", AUTO_DELIMITER)
+        # detect_csv_delimiter sniffs by path, so it gets the store's local path.
         raw = pd.read_csv(
-            path,
-            delimiter=resolve_delimiter(str(path), setting, "stock"),
+            io.BytesIO(store.read_bytes(rel)),
+            delimiter=resolve_delimiter(str(store.local_path(rel)), setting, "stock"),
             encoding="utf-8-sig",
             dtype=_get_sku_dtype_dict(mappings, "stock"),
         )
         return analysis.lot_table(analysis.stock_with_internal_columns(raw, mappings))
     except Exception:
-        logger.exception(f"Could not read this session's lots from {path}")
+        logger.exception(f"Could not read this session's lots from {rel}")
         return None
 
 
@@ -1218,6 +1218,7 @@ def _save_results_and_reports(
     session_manager: Any | None,
     client_id: str | None,
     profile_manager: Any | None,
+    store,
     current_session: str | None = None,
     history_readable: bool = True,
     session_path: str | None = None,
@@ -1273,8 +1274,9 @@ def _save_results_and_reports(
     # Determine output directory based on mode
     if use_session_mode:
         # Session mode: save to session/analysis/
-        analysis_dir = session_manager.get_analysis_dir(working_path)
-        output_file_path = str(Path(analysis_dir) / "fulfillment_analysis.xlsx")
+        analysis_rel = session_state.session_rel(store, session_manager.get_analysis_dir(working_path))
+        output_rel = f"{analysis_rel}/fulfillment_analysis.xlsx"
+        output_file_path = str(store.local_path(output_rel))
         logger.info(f"Session mode: saving to {output_file_path}")
     else:
         # Legacy mode: save to specified output_dir_path
@@ -1282,8 +1284,9 @@ def _save_results_and_reports(
             os.makedirs(output_dir_path)
         output_file_path = os.path.join(output_dir_path, "fulfillment_analysis.xlsx")
 
-    # Save Excel report with multiple sheets
-    with pd.ExcelWriter(output_file_path, engine="xlsxwriter") as writer:
+    # Save Excel report with multiple sheets, built in memory and written once
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
         final_df.to_excel(writer, sheet_name="fulfillment_analysis", index=False)
         summary_present_df.to_excel(writer, sheet_name="Summary_Present", index=False)
 
@@ -1315,6 +1318,14 @@ def _save_results_and_reports(
         for row_num, status in enumerate(final_df["Order_Fulfillment_Status"]):
             if status == "Not Fulfillable":
                 worksheet.set_row(row_num + 1, None, highlight_format)
+    if use_session_mode:
+        try:
+            store.write_bytes(output_rel, buf.getvalue())
+        except PermissionError as e:
+            raise PermissionError(e.errno, e.strerror, output_file_path) from e
+    else:
+        # Legacy mode writes to the operator's own output folder, not the store.
+        Path(output_file_path).write_bytes(buf.getvalue())
     logger.info(f"Excel report saved to '{output_file_path}'")
 
     # The packing data is built before history and any state file is written,
@@ -1350,7 +1361,7 @@ def _save_results_and_reports(
             session_state.save_state(
                 working_path, final_df, session_state.state_stamp(working_path)
             )
-            atomic_write_json(Path(analysis_dir) / "analysis_stats.json", stats)
+            store.write_json(f"{analysis_rel}/analysis_stats.json", stats)
             logger.info("Initial session state files saved successfully")
         except Exception:
             # The run still succeeds: history and inventory memory are already saved.
@@ -1371,17 +1382,16 @@ def _save_results_and_reports(
                     if not k.startswith(("_", "test_")) and k != "inventory_memory"
                 }
                 try:
-                    atomic_write_json(
-                        Path(session_manager.get_input_dir(working_path)) / "shopify_config.json", kept
-                    )
+                    input_rel = session_state.session_rel(store, session_manager.get_input_dir(working_path))
+                    store.write_json(f"{input_rel}/shopify_config.json", kept)
                 except Exception:
                     logger.warning("Could not keep the session's config copy", exc_info=True)
 
             # Save analysis_data.json
-            analysis_data_path = Path(analysis_dir) / "analysis_data.json"
-            atomic_write_json(analysis_data_path, analysis_data)
+            analysis_data_path = f"{analysis_rel}/analysis_data.json"
+            store.write_json(analysis_data_path, analysis_data)
 
-            logger.info(f"analysis_data.json saved to: {analysis_data_path}")
+            logger.info(f"analysis_data.json saved to: {store.local_path(analysis_data_path)}")
 
             # Update session_info.json with analysis results and statistics
             session_manager.update_session_info(
@@ -1455,7 +1465,7 @@ def _save_results_and_reports(
                     # baseline, summed per SKU (Task 1). Memory-mode runs
                     # already read or wrote theirs on load.
                     write_memory_baseline(
-                        session_path, build_inventory_snapshot(None, stock_df), names_dict
+                        store, session_path, build_inventory_snapshot(None, stock_df), names_dict
                     )
                 profile_manager.save_inventory_memory(
                     client_id,
@@ -1592,6 +1602,8 @@ def run_full_analysis(
         if progress is not None:
             progress(index)
 
+    owner = session_manager if session_manager is not None else profile_manager
+    store = owner.store if owner is not None else None
     saving = False
     try:
         step(0)
@@ -1620,6 +1632,7 @@ def run_full_analysis(
             stock_delimiter,
             orders_delimiter,
             config,
+            store,
             session_path,
         )
 
@@ -1696,6 +1709,7 @@ def run_full_analysis(
             session_manager,
             client_id,
             profile_manager,
+            store,
             current_session=current_session,
             history_readable=history_readable,
             session_path=session_path,
@@ -1733,7 +1747,7 @@ def run_full_analysis(
         return False, error_msg, None, None
     finally:
         if not saving:
-            _discard_unsaved_baseline(config, session_path)
+            _discard_unsaved_baseline(store, config, session_path)
 
 
 def get_unique_column_values(df, column_name):

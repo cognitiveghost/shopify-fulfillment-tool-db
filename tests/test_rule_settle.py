@@ -2,6 +2,7 @@
 
 import pandas as pd
 
+from shared.store import FileStore
 from shopify_tool import core
 from shopify_tool.tag_manager import add_tag
 
@@ -21,7 +22,7 @@ def _run(tmp_path, orders_csv, stock_csv, rules):
         "rules": rules,
     }
     orders_df, stock_df = core._load_and_validate_files(
-        str(tmp_path / "stock.csv"), str(tmp_path / "orders.csv"), ",", ",", config)
+        str(tmp_path / "stock.csv"), str(tmp_path / "orders.csv"), ",", ",", config, FileStore(tmp_path))
     history = pd.DataFrame(columns=["Order_Number", "Execution_Date"])
     return core._run_analysis_and_rules(orders_df, stock_df, history, config)[0]
 

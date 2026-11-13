@@ -11,6 +11,7 @@ from test_stale_session import (  # noqa: F401  main_window is a fixture
 )
 
 from gui.main_window_pyside import out_of_date_message
+from shared.store import FileStore
 from shopify_tool import report_jobs, stock_ledger
 from shopify_tool.report_jobs import ReportOutcome
 
@@ -25,14 +26,14 @@ FRAME = pd.DataFrame(
 
 
 def test_one_failing_report_does_not_stop_the_others(monkeypatch, tmp_path):
-    def fake(config, *a, **k):
+    def fake(_store, config, *a, **k):
         if config["name"] == "DPD":
             raise ValueError("no such column")
         return ReportOutcome(config["name"], config["report_type"], output_file="x.xlsx")
 
     monkeypatch.setattr(report_jobs, "generate_report", fake)
     batch = [{"name": n, "report_type": "packing_lists"} for n in ("DHL", "DPD", "Daily ERP")]
-    out = report_jobs.generate_reports(batch, tmp_path, FRAME, {}, "s")
+    out = report_jobs.generate_reports(FileStore(tmp_path), batch, tmp_path, FRAME, {}, "s")
     assert [(o.name, o.failed) for o in out] == [("DHL", False), ("DPD", True), ("Daily ERP", False)]
 
 
@@ -41,12 +42,12 @@ def test_a_locked_file_is_named_in_the_outcome(monkeypatch, tmp_path):
         raise PermissionError(13, "denied", str(tmp_path / "packing_lists" / "ALL.xlsx"))
 
     monkeypatch.setattr(report_jobs.packing_lists, "create_packing_list", locked)
-    (outcome,) = report_jobs.generate_reports([PACKING_ALL], tmp_path, FRAME, {}, "s")
+    (outcome,) = report_jobs.generate_reports(FileStore(tmp_path), [PACKING_ALL], tmp_path, FRAME, {}, "s")
     assert (outcome.failed, outcome.locked_file) == (True, "ALL.xlsx")
 
 
 def test_the_packing_json_names_the_session_and_its_orders(tmp_path):
-    (outcome,) = report_jobs.generate_reports([PACKING_ALL], tmp_path, FRAME, {}, "2026-10-05_1")
+    (outcome,) = report_jobs.generate_reports(FileStore(tmp_path), [PACKING_ALL], tmp_path, FRAME, {}, "2026-10-05_1")
     assert outcome.output_file == str(tmp_path / "packing_lists" / "ALL.xlsx")
     data = json.loads((tmp_path / "packing_lists" / "ALL.json").read_text(encoding="utf-8"))
     assert data["session_id"] == "2026-10-05_1"
@@ -116,7 +117,7 @@ def test_statistics_record_each_lists_order_count(tmp_path):
     info = {"statistics": {}}
     sm = SimpleNamespace(get_session_info=lambda p: info,
                          update_session_info=lambda p, u: info.update(u) or True)
-    report_jobs.update_packing_list_statistics(sm, tmp_path)
+    report_jobs.update_packing_list_statistics(FileStore(tmp_path), sm, tmp_path)
     assert info["statistics"]["packing_lists"] == ["ALL", "BROKEN"]
     assert info["statistics"]["packing_list_orders"] == {"ALL": 40}
 
@@ -141,7 +142,7 @@ def test_withdraw_moves_an_unstarted_list_and_leaves_a_started_one(tmp_path):
         (lists / f"{name}.xlsx").write_bytes(b"x")
     (tmp_path / "packing" / "DHL").mkdir(parents=True)
 
-    assert report_jobs.withdraw_lists(tmp_path, ["ALL", "DHL"]) == ["ALL"]
+    assert report_jobs.withdraw_lists(FileStore(tmp_path), tmp_path, ["ALL", "DHL"]) == ["ALL"]
     assert not (lists / "ALL.json").exists()
     assert (lists / "withdrawn" / "ALL.json").exists()
     assert (lists / "withdrawn" / "ALL.xlsx").exists()
@@ -153,7 +154,7 @@ def test_withdraw_replaces_an_older_withdrawn_copy(tmp_path):
     (lists / "withdrawn").mkdir(parents=True)
     (lists / "withdrawn" / "ALL.json").write_text("old", encoding="utf-8")
     (lists / "ALL.json").write_text("new", encoding="utf-8")
-    report_jobs.withdraw_lists(tmp_path, ["ALL"])
+    report_jobs.withdraw_lists(FileStore(tmp_path), tmp_path, ["ALL"])
     assert (lists / "withdrawn" / "ALL.json").read_text(encoding="utf-8") == "new"
 
 
@@ -161,20 +162,20 @@ def test_a_locked_json_is_not_reported_withdrawn(tmp_path, monkeypatch):
     lists = tmp_path / "packing_lists"
     lists.mkdir()
     (lists / "ALL.json").write_text("{}", encoding="utf-8")
-    real = report_jobs.os.replace
+    real = FileStore.move
 
-    def locked(src, dst):
+    def locked(self, src, dst):
         if str(src).endswith(".json"):
             raise PermissionError(13, "in use", str(src))
-        return real(src, dst)
+        return real(self, src, dst)
 
-    monkeypatch.setattr(report_jobs.os, "replace", locked)
-    assert report_jobs.withdraw_lists(tmp_path, ["ALL"]) == []
+    monkeypatch.setattr(FileStore, "move", locked)
+    assert report_jobs.withdraw_lists(FileStore(tmp_path), tmp_path, ["ALL"]) == []
     assert (lists / "ALL.json").exists()
 
 
 def test_a_written_list_carries_its_fingerprint(tmp_path):
-    outcome = report_jobs.generate_report(PACKING_ALL, tmp_path, FRAME, {}, "s")
+    outcome = report_jobs.generate_report(FileStore(tmp_path), PACKING_ALL, tmp_path, FRAME, {}, "s")
     assert outcome.fingerprint == report_jobs.packing_fingerprint(FRAME)
 
 
@@ -206,7 +207,7 @@ def test_an_xlsx_write_failure_withdraws_the_old_list(tmp_path, monkeypatch):
         raise PermissionError(13, "denied", str(lists / "ALL.xlsx"))
 
     monkeypatch.setattr(report_jobs.packing_lists, "create_packing_list", locked)
-    outcome = report_jobs.generate_report(PACKING_ALL, tmp_path, FRAME, {}, "s")
+    outcome = report_jobs.generate_report(FileStore(tmp_path), PACKING_ALL, tmp_path, FRAME, {}, "s")
     assert outcome.failed
     assert (lists / "withdrawn" / "ALL.json").exists()
     assert not (lists / "ALL.json").exists()
@@ -220,7 +221,7 @@ def test_a_json_write_failure_fails_and_withdraws(tmp_path, monkeypatch):
     def broken(*a, **k):
         raise OSError("disk full")
 
-    monkeypatch.setattr(report_jobs, "atomic_write_json", broken)
-    outcome = report_jobs.generate_report(PACKING_ALL, tmp_path, FRAME, {}, "s")
+    monkeypatch.setattr(FileStore, "write_json", broken)
+    outcome = report_jobs.generate_report(FileStore(tmp_path), PACKING_ALL, tmp_path, FRAME, {}, "s")
     assert outcome.failed
     assert not (lists / "ALL.json").exists()

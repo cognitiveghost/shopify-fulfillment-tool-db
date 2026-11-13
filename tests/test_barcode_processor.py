@@ -10,6 +10,7 @@ import pypdf
 import pytest
 from barcode.codex import Code128
 
+from shared.store import FileStore
 from shopify_tool import label_tools
 from shopify_tool.barcode_processor import (
     InvalidOrderNumberError,
@@ -140,17 +141,18 @@ class TestGenerateCode128LabelsPdfIntegration:
     def test_generates_pdf_with_one_page_per_order(self, tmp_path):
         output_pdf = tmp_path / "labels.pdf"
         result = generate_code128_labels_pdf(
+            FileStore(tmp_path),
             [self._order(safe_order_number="#1"), self._order(safe_order_number="#2")],
-            output_pdf,
+            "labels.pdf",
         )
-        assert result == output_pdf
+        assert result == str(output_pdf)
         assert output_pdf.exists()
         reader = pypdf.PdfReader(str(output_pdf))
         assert len(reader.pages) == 2
 
     def test_empty_orders_raises_value_error(self, tmp_path):
         with pytest.raises(ValueError):
-            generate_code128_labels_pdf([], tmp_path / "labels.pdf")
+            generate_code128_labels_pdf(FileStore(tmp_path), [], "labels.pdf")
 
     @pytest.mark.parametrize("render", [generate_code128_labels_pdf, generate_qr_labels_pdf])
     @pytest.mark.parametrize(
@@ -169,7 +171,7 @@ class TestGenerateCode128LabelsPdfIntegration:
             self._order(safe_order_number="#3"),
             self._order(safe_order_number="#4"),
         ]
-        output_pdf = render(orders, tmp_path / "labels.pdf")
+        output_pdf = render(FileStore(tmp_path), orders, "labels.pdf")
         assert len(pypdf.PdfReader(str(output_pdf)).pages) == 4
 
     def test_long_courier_and_multi_tag_order_renders_without_crash(self, tmp_path):
@@ -182,14 +184,15 @@ class TestGenerateCode128LabelsPdfIntegration:
         the template still renders end-to-end for this input shape."""
         output_pdf = tmp_path / "stress.pdf"
         result = generate_code128_labels_pdf(
+            FileStore(tmp_path),
             [self._order(
                 courier="DHL Express International",
                 tag="GIFT+1|GIFT+2|PRIORITY|FRAGILE",
                 item_count=15,
             )],
-            output_pdf,
+            "stress.pdf",
         )
-        assert result == output_pdf
+        assert result == str(output_pdf)
         reader = pypdf.PdfReader(str(output_pdf))
         assert len(reader.pages) == 1
 
@@ -207,16 +210,17 @@ class TestGenerateQrLabelsPdfIntegration:
     def test_generates_pdf_with_one_page_per_order(self, tmp_path):
         output_pdf = tmp_path / "qr_labels.pdf"
         result = generate_qr_labels_pdf(
+            FileStore(tmp_path),
             [self._order(safe_order_number="#1"), self._order(safe_order_number="#2")],
-            output_pdf,
+            "qr_labels.pdf",
         )
-        assert result == output_pdf
+        assert result == str(output_pdf)
         reader = pypdf.PdfReader(str(output_pdf))
         assert len(reader.pages) == 2
 
     def test_empty_orders_raises_value_error(self, tmp_path):
         with pytest.raises(ValueError):
-            generate_qr_labels_pdf([], tmp_path / "qr_labels.pdf")
+            generate_qr_labels_pdf(FileStore(tmp_path), [], "qr_labels.pdf")
 
     def test_qr_payload_is_order_number_only(self, tmp_path, monkeypatch):
         captured = {}
@@ -229,7 +233,7 @@ class TestGenerateQrLabelsPdfIntegration:
         monkeypatch.setattr(label_tools, "qr_code", spy_qr_code)
 
         generate_qr_labels_pdf(
-            [self._order(safe_order_number="#1029392")], tmp_path / "qr_labels.pdf"
+            FileStore(tmp_path), [self._order(safe_order_number="#1029392")], "qr_labels.pdf"
         )
 
         assert captured["data"] == "#1029392"
@@ -239,14 +243,15 @@ class TestGenerateQrLabelsPdfIntegration:
         same stress-case input, same rationale, applied to the QR label path."""
         output_pdf = tmp_path / "qr_stress.pdf"
         result = generate_qr_labels_pdf(
+            FileStore(tmp_path),
             [self._order(
                 courier="DHL Express International",
                 tag="GIFT+1|GIFT+2|PRIORITY|FRAGILE",
                 item_count=15,
             )],
-            output_pdf,
+            "qr_stress.pdf",
         )
-        assert result == output_pdf
+        assert result == str(output_pdf)
         reader = pypdf.PdfReader(str(output_pdf))
         assert len(reader.pages) == 1
 
@@ -304,7 +309,7 @@ class TestPackingListOrders:
         pd.DataFrame({"Order_Number": ["#9", "#9", "#10"], "SKU": ["B", "C", "A"]}).to_excel(
             path, index=False
         )
-        assert packing_list_orders(path) == frozenset({"#9", "#10"})
+        assert packing_list_orders(FileStore(tmp_path), "DHL.xlsx") == frozenset({"#9", "#10"})
 
     def test_a_sheet_with_no_order_number_column_is_refused(self, tmp_path):
         from shopify_tool.barcode_processor import packing_list_orders
@@ -312,7 +317,7 @@ class TestPackingListOrders:
         path = tmp_path / "odd.xlsx"
         pd.DataFrame({"SKU": ["A"]}).to_excel(path, index=False)
         with pytest.raises(ValueError, match="Order_Number"):
-            packing_list_orders(path)
+            packing_list_orders(FileStore(tmp_path), "odd.xlsx")
 
 
 class TestGenerateListLabels:
@@ -321,7 +326,9 @@ class TestGenerateListLabels:
 
         folder = tmp_path / "barcodes" / "DHL"
         said = []
-        outcome = generate_list_labels(_order_lines(), folder, "DHL", progress=said.append)
+        outcome = generate_list_labels(
+            FileStore(tmp_path), _order_lines(), "barcodes/DHL", "DHL", progress=said.append
+        )
 
         assert outcome == {
             "list": "DHL",
@@ -341,7 +348,7 @@ class TestGenerateListLabels:
         folder = tmp_path / "barcodes" / "DHL"
         said = []
         outcome = generate_list_labels(
-            _order_lines(), folder, "DHL", qr=True, progress=said.append
+            FileStore(tmp_path), _order_lines(), "barcodes/DHL", "DHL", qr=True, progress=said.append
         )
 
         assert outcome["qr_pdf"] == str(folder / "DHL_qr_labels.pdf")
@@ -352,11 +359,11 @@ class TestGenerateListLabels:
         from shopify_tool import barcode_processor
 
         monkeypatch.setattr(
-            barcode_processor, "generate_code128_labels_pdf", lambda orders, path: path
+            barcode_processor, "generate_code128_labels_pdf", lambda store, orders, path: path
         )
         said = []
         barcode_processor.generate_list_labels(
-            _order_lines().iloc[:1], tmp_path, "DHL", progress=said.append
+            FileStore(tmp_path), _order_lines().iloc[:1], ".", "DHL", progress=said.append
         )
         assert said == ["Writing 1 barcode label…"]
 
@@ -369,9 +376,9 @@ class TestGenerateListLabels:
         monkeypatch.setattr(
             barcode_processor,
             "generate_code128_labels_pdf",
-            lambda orders, path: seen.extend(orders) or path,
+            lambda store, orders, path: seen.extend(orders) or path,
         )
-        barcode_processor.generate_list_labels(_order_lines(), tmp_path, "DHL")
+        barcode_processor.generate_list_labels(FileStore(tmp_path), _order_lines(), ".", "DHL")
 
         # "#9" sorts before "#10", and its two lines add up.
         assert [(o["order_number"], o["sequential_num"], o["item_count"]) for o in seen] == [
@@ -384,13 +391,13 @@ class TestGenerateListLabels:
     def test_a_qr_failure_keeps_the_barcode_pdf(self, tmp_path, monkeypatch):
         from shopify_tool import barcode_processor
 
-        def broken(_orders, _path):
+        def broken(_store, _orders, _path):
             raise barcode_processor.BarcodeGenerationError("no QR today")
 
         monkeypatch.setattr(barcode_processor, "generate_qr_labels_pdf", broken)
         folder = tmp_path / "barcodes" / "DHL"
         outcome = barcode_processor.generate_list_labels(
-            _order_lines(), folder, "DHL", qr=True
+            FileStore(tmp_path), _order_lines(), "barcodes/DHL", "DHL", qr=True
         )
         assert outcome["qr_failed"] is True
         assert outcome["qr_pdf"] is None
@@ -399,12 +406,12 @@ class TestGenerateListLabels:
     def test_a_barcode_render_failure_raises(self, tmp_path, monkeypatch):
         from shopify_tool import barcode_processor
 
-        def broken(_orders, _path):
+        def broken(_store, _orders, _path):
             raise barcode_processor.BarcodeGenerationError("renderer down")
 
         monkeypatch.setattr(barcode_processor, "generate_code128_labels_pdf", broken)
         with pytest.raises(barcode_processor.BarcodeGenerationError):
-            barcode_processor.generate_list_labels(_order_lines(), tmp_path, "DHL")
+            barcode_processor.generate_list_labels(FileStore(tmp_path), _order_lines(), ".", "DHL")
 
     def test_order_numbers_that_cannot_be_encoded_are_counted_not_rendered(
         self, tmp_path, monkeypatch
@@ -415,11 +422,11 @@ class TestGenerateListLabels:
         monkeypatch.setattr(
             barcode_processor,
             "generate_code128_labels_pdf",
-            lambda orders, path: rendered.append(len(orders)) or path,
+            lambda store, orders, path: rendered.append(len(orders)) or path,
         )
         lines = _order_lines()
         lines.loc[0, "Order_Number"] = "!!!"
-        outcome = barcode_processor.generate_list_labels(lines, tmp_path, "DHL")
+        outcome = barcode_processor.generate_list_labels(FileStore(tmp_path), lines, ".", "DHL")
         assert (outcome["labels"], outcome["failed"]) == (1, 1)
         assert rendered == [1]
 
@@ -430,13 +437,13 @@ class TestGenerateListLabels:
         monkeypatch.setattr(
             barcode_processor,
             "generate_code128_labels_pdf",
-            lambda orders, path: rendered.append(1) or path,
+            lambda store, orders, path: rendered.append(1) or path,
         )
         lines = _order_lines().iloc[:1].copy()
         lines.loc[0, "Order_Number"] = "!!!"
         said = []
         outcome = barcode_processor.generate_list_labels(
-            lines, tmp_path, "DHL", qr=True, progress=said.append
+            FileStore(tmp_path), lines, ".", "DHL", qr=True, progress=said.append
         )
         assert (outcome["labels"], outcome["failed"], outcome["pdf"]) == (0, 1, None)
         assert rendered == [] and said == []

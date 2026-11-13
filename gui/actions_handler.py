@@ -290,7 +290,7 @@ class ActionsHandler(QObject):
             # The run's own stock file is now the session's; later refreshes
             # derive lots from it (ADR 0015).
             self.mw.lot_table = core.session_lot_table(
-                self.mw.session_path, self.mw.active_profile_config
+                self.mw.profile_manager.store, self.mw.session_path, self.mw.active_profile_config
             )
             self.mw.analysis_stats = stats
             # Every recorded operation points at the previous run's frame:
@@ -677,7 +677,10 @@ class ActionsHandler(QObject):
         for report_config in batch:
             self._log_report_start(report_config)
         # Looked up now, not imported by name, so a test can replace it.
-        worker = Worker(report_jobs.generate_reports, batch, session_path, *self._report_snapshot(batch))
+        worker = Worker(
+            report_jobs.generate_reports, self.mw.profile_manager.store, batch, session_path,
+            *self._report_snapshot(batch),
+        )
         worker.signals.result.connect(self._on_reports_generated)
         worker.signals.error.connect(self.on_task_error)
         worker.signals.finished.connect(self._on_reports_finished)
@@ -808,7 +811,9 @@ class ActionsHandler(QObject):
         batch = [dict(report_config, report_type=report_type)]
         self._log_report_start(batch[0])
         self._on_reports_generated(
-            report_jobs.generate_reports(batch, session_path, *self._report_snapshot(batch))
+            report_jobs.generate_reports(
+                self.mw.profile_manager.store, batch, session_path, *self._report_snapshot(batch)
+            )
         )
 
     def toggle_fulfillment_status_for_order(self, order_number):
@@ -1235,7 +1240,7 @@ class ActionsHandler(QObject):
         # opening stock is the session's memory baseline.
         baseline = None
         if not getattr(self.mw, "stock_file_path", None):
-            baseline = core.read_memory_baseline(self.mw.session_path)
+            baseline = core.read_memory_baseline(self.mw.profile_manager.store, self.mw.session_path)
             if baseline is None:
                 self.log.warning("show_add_product_dialog called with no stock file")
                 show_error(
@@ -1846,7 +1851,8 @@ class ActionsHandler(QObject):
             )
             return
 
-        session_path_objs = [Path(p) for p in session_paths if Path(p).exists()]
+        store = self.mw.profile_manager.store
+        session_path_objs = [Path(p) for p in session_paths if store.exists(session_state.session_rel(store, p))]
         if len(session_path_objs) < 2:
             # Not a disabled-action guard: the button needs 2+ selected, so
             # sessions went missing on the share after they were listed.
@@ -1863,7 +1869,7 @@ class ActionsHandler(QObject):
             return
 
         combined_df = merge_session_stock_exports(
-            session_path_objs, self.mw.current_client_id
+            store, session_path_objs, self.mw.current_client_id
         )
 
         if combined_df.empty:

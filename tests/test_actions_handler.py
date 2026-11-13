@@ -189,7 +189,7 @@ def test_on_analysis_complete_reads_the_sessions_lots(monkeypatch, tmp_path):
     monkeypatch.setattr("gui.actions_handler.toast", Mock())
     monkeypatch.setattr("shared.stats_manager.StatsManager.record_analysis", Mock())
     lots = {"A": []}
-    monkeypatch.setattr("gui.actions_handler.core.session_lot_table", lambda path, _config: lots)
+    monkeypatch.setattr("gui.actions_handler.core.session_lot_table", lambda _store, path, _config: lots)
     df = pd.DataFrame([{"Order_Number": "1001", "Order_Fulfillment_Status": "Fulfillable"}])
     mw = SimpleNamespace(
         session_path=None,

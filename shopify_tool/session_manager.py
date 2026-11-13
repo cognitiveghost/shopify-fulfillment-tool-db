@@ -870,7 +870,7 @@ class SessionManager:
             >>> sm.get_barcodes_dir("Sessions/CLIENT_M/2026-01-16_1")
             Path("Sessions/CLIENT_M/2026-01-16_1/barcodes")
         """
-        return Path(session_path) / "barcodes"
+        return self.store.local_path(f"{session_rel(self.store, session_path)}/barcodes")
 
     def get_packing_list_barcode_dir(self, session_path: str, packing_list_name: str) -> Path:
         """

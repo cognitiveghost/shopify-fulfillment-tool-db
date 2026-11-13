@@ -19,6 +19,7 @@ import pytest
 
 from gui.actions_handler import ActionsHandler
 from gui.selection_helper import SelectionHelper
+from shared.store import FileStore
 from shopify_tool import core, fulfillment_history
 from shopify_tool.packing_lists import create_packing_list
 from shopify_tool.sku_writeoff import calculate_writeoff_quantities
@@ -152,6 +153,7 @@ class MemoryProfile:
 
     def __init__(self, client_dir, skus):
         self.client_dir = client_dir
+        self.store = FileStore(client_dir)
         self.memory = {"enabled": True, "skus": dict(skus), "names": {}}
 
     def get_inventory_memory(self, _cid):
@@ -273,7 +275,7 @@ def test_packing_list_does_not_mark_a_history_only_order(shop, tmp_path):
     df = shop.run([("#1", "A", 1), ("#2", "A", 1)], [("A", 5)])
     assert not repeat(df, "#1")
     out = tmp_path / "list.xlsx"
-    create_packing_list(df, str(out))
+    create_packing_list(FileStore(out.parent), df, out.name)
     sheet = pd.read_excel(out, header=None, dtype=str).fillna("")
     rows_for_1 = sheet[
         sheet.apply(lambda r: r.str.contains("#1", regex=False).any(), axis=1)
@@ -386,7 +388,7 @@ def test_stock_export_writes_a_repeated_sku_off_once_after_reopen(tmp_path):
     pkl = tmp_path / "current_state.pkl"
     df.to_pickle(pkl)
     out = tmp_path / "export.xls"
-    create_stock_export(pd.read_pickle(pkl), str(out))
+    create_stock_export(FileStore(tmp_path), pd.read_pickle(pkl), "export.xls")
     export = pd.read_excel(out, dtype=str)
     assert export["Брой"].astype(int).sum() == 3
     assert dict(zip(export["Партида"], export["Брой"].astype(int))) == {

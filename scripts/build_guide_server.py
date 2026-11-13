@@ -63,7 +63,7 @@ def _run_session(pm, sm, client_id: str, fixture: Path, config: dict) -> Path | 
             raise RuntimeError(message)
         batch = [_report_config(config, stem) for stem in meta["packing_lists"]]
         outcomes = report_jobs.generate_reports(
-            batch, session_path, final_df, config.get("tag_categories", {}), session_path.name, sm,
+            pm.store, batch, session_path, final_df, config.get("tag_categories", {}), session_path.name, sm,
         )
         failed = [o.name for o in outcomes if o.failed]
         if failed:

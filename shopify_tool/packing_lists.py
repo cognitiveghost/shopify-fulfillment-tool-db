@@ -1,3 +1,4 @@
+import io
 import logging
 import os
 from datetime import datetime
@@ -56,7 +57,7 @@ def sort_for_packing_list(df):
     return keyed.sort_values(by=by, kind="stable").drop(columns=["_courier", "_order"])
 
 
-def create_packing_list(analysis_df, output_file, report_name="Packing List",
+def create_packing_list(store, analysis_df, output_rel, report_name="Packing List",
                         filters=None, exclude_skus=None, columns=None):
     """Creates a versatile, formatted packing list in an Excel .xlsx file.
 
@@ -83,8 +84,8 @@ def create_packing_list(analysis_df, output_file, report_name="Packing List",
     Args:
         analysis_df (pd.DataFrame): The main DataFrame from the fulfillment
             analysis, containing all order line items and their statuses.
-        output_file (str): The full path where the output .xlsx file will be
-            saved.
+        store (Store): Where the output .xlsx is written.
+        output_rel (str): The store path of the output .xlsx file.
         report_name (str, optional): The name of the report, used for logging.
             Defaults to "Packing List".
         filters (list[dict], optional): A list of dictionaries, where each
@@ -198,7 +199,7 @@ def create_packing_list(analysis_df, output_file, report_name="Packing List",
         )
 
         generation_timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
-        output_filename = os.path.basename(output_file)
+        output_filename = os.path.basename(output_rel)
 
         # The timestamp and the filename ride on two column headers when those
         # columns are printed -- that is the established look. With a custom
@@ -215,7 +216,8 @@ def create_packing_list(analysis_df, output_file, report_name="Packing List",
         print_list = print_list.rename(columns=rename_map)
 
         logger.info("Creating Excel file...")
-        with pd.ExcelWriter(output_file, engine="xlsxwriter") as writer:
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
             sheet_name = os.path.splitext(output_filename)[0]
             print_list.to_excel(writer, sheet_name=sheet_name, index=False)
 
@@ -293,6 +295,12 @@ def create_packing_list(analysis_df, output_file, report_name="Packing List",
             worksheet.set_landscape()
             worksheet.repeat_rows(0)  # Repeat header row
             worksheet.fit_to_pages(1, 0)  # Fit to 1 page wide
+
+        try:
+            store.write_bytes(output_rel, buf.getvalue())
+        except PermissionError as e:
+            # Name the list, not the store's temp file, in the "close it" message
+            raise PermissionError(e.errno, e.strerror, str(store.local_path(output_rel))) from e
 
         logger.info(f"Report '{report_name}' created successfully.")
         return int(sorted_list["Order_Number"].nunique())

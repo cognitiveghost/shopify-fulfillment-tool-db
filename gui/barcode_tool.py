@@ -6,10 +6,8 @@ The page draws what facts() returns, worded by gui/tools_state.py.
 """
 
 import logging
-import os
 from collections.abc import Callable
 from dataclasses import replace
-from pathlib import Path
 
 from PySide6.QtCore import QObject, QThreadPool, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
@@ -27,13 +25,14 @@ from gui.tools_state import (
 from gui.worker import Worker
 from shared.i18n import _, _n
 from shopify_tool.barcode_processor import (
-    barcode_pdf_path,
-    barcodes_dir,
+    barcode_pdf_rel,
+    barcodes_rel,
     generate_list_labels,
     packing_list_orders,
-    qr_pdf_path,
+    qr_pdf_rel,
 )
 from shopify_tool.report_filters import fulfillable_only
+from shopify_tool.session_state import session_rel
 
 logger = logging.getLogger(__name__)
 
@@ -42,27 +41,25 @@ logger = logging.getLogger(__name__)
 _ORDERS_CACHE: dict[str, tuple[float, frozenset]] = {}
 
 
-def _orders(path: Path) -> frozenset:
-    key = str(path)
-    mtime = os.path.getmtime(path)
+def _orders(store, rel: str) -> frozenset:
+    key = str(store.local_path(rel))
+    stamp = store.stamp(rel)
     hit = _ORDERS_CACHE.get(key)
-    if hit is not None and hit[0] == mtime:
+    if hit is not None and hit[0] == stamp:
         return hit[1]
-    orders = packing_list_orders(path)
-    _ORDERS_CACHE[key] = (mtime, orders)
+    orders = packing_list_orders(store, rel)
+    _ORDERS_CACHE[key] = (stamp, orders)
     return orders
 
 
-def read_packing_lists(session_path, analysis_df) -> list[tuple[PackingList, frozenset]]:
+def read_packing_lists(store, session_path, analysis_df) -> list[tuple[PackingList, frozenset]]:
     """The session's packing lists, each with its order numbers.
 
     Runs on a worker: it reads every workbook and looks for each list's label
     PDFs on the share. A list's count is its Fulfillable orders, or None when
     its workbook can't be read or there is no analysis to count against.
     """
-    folder = Path(session_path) / "packing_lists"
-    if not folder.is_dir():
-        return []
+    folder = f"{session_rel(store, session_path)}/packing_lists"
     fulfillable = None
     if analysis_df is not None:
         base = fulfillable_only(analysis_df)
@@ -71,25 +68,27 @@ def read_packing_lists(session_path, analysis_df) -> list[tuple[PackingList, fro
 
     found = []
     # "~$DHL.xlsx" is the lock file Excel leaves beside an open workbook.
-    paths = [p for p in folder.glob("*.xlsx") if not p.name.startswith("~$")]
-    for path in sorted(paths, key=lambda p: p.stem):
-        name = path.stem
+    names = sorted(
+        n[: -len(".xlsx")] for n in store.list_dir(folder) if n.endswith(".xlsx") and not n.startswith("~$")
+    )
+    for name in names:
+        rel = f"{folder}/{name}.xlsx"
         orders, count = frozenset(), None
         try:
-            orders = _orders(path)
+            orders = _orders(store, rel)
             if fulfillable is not None:
                 count = int(fulfillable[fulfillable.isin(orders)].nunique())
         except Exception:
-            logger.exception(f"Failed to read packing list {path}")
+            logger.exception(f"Failed to read packing list {rel}")
             orders, count = frozenset(), None
-        labels = barcodes_dir(session_path, name)
+        labels = barcodes_rel(store, session_path, name)
         found.append(
             (
                 PackingList(
                     name,
                     count,
-                    has_labels=barcode_pdf_path(labels, name).exists(),
-                    has_qr=qr_pdf_path(labels, name).exists(),
+                    has_labels=store.exists(barcode_pdf_rel(labels, name)),
+                    has_qr=store.exists(qr_pdf_rel(labels, name)),
                 ),
                 orders,
             )
@@ -97,12 +96,12 @@ def read_packing_lists(session_path, analysis_df) -> list[tuple[PackingList, fro
     return found
 
 
-def _read(session_path, analysis_df):
+def _read(store, session_path, analysis_df):
     """The worker's function: the session comes back with its lists, or with
     None when they couldn't be read, so either can be told apart from one for
     a session the operator has left."""
     try:
-        return session_path, read_packing_lists(session_path, analysis_df)
+        return session_path, read_packing_lists(store, session_path, analysis_df)
     except Exception:
         logger.exception(f"Reading packing lists failed: {session_path}")
         return session_path, None
@@ -119,14 +118,17 @@ class BarcodeTool(QObject):
         self,
         host: QWidget,
         analysis: Callable[[], object],
+        store: Callable[[], object],
         pool: QThreadPool | None = None,
     ):
         """host: the parent for dialogs and error banners. analysis: returns
-        the window's analysis frame, or None. pool: where a Worker starts;
-        the global pool when None."""
+        the window's analysis frame, or None. store: returns this PC's Store
+        (a callable, as the profile manager is not built yet when the tools
+        are). pool: where a Worker starts; the global pool when None."""
         super().__init__(host)
         self._host = host
         self._analysis = analysis
+        self._store = store
         self._pool = pool
         self._session: str | None = None
         self._lists: list[PackingList] = []
@@ -152,7 +154,8 @@ class BarcodeTool(QObject):
     def facts(self) -> BarcodeFacts:
         folder = ""
         if self._session and self._selected:
-            folder = str(barcodes_dir(self._session, self._selected))
+            store = self._store()
+            folder = str(store.local_path(barcodes_rel(store, self._session, self._selected)))
         return BarcodeFacts(
             lists=tuple(self._lists),
             loading=self._loading,
@@ -189,7 +192,7 @@ class BarcodeTool(QObject):
         self._loading = True
         # Filtered here, on the GUI thread: the worker gets rows of its own,
         # not the frame the window goes on editing.
-        worker = Worker(_read, self._session, fulfillable_only(frame))
+        worker = Worker(_read, self._store(), self._session, fulfillable_only(frame))
         worker.signals.result.connect(self._on_lists)
         self._list_worker = worker
         self.changed.emit()
@@ -242,8 +245,9 @@ class BarcodeTool(QObject):
         frame = self._analysis()
         if entry is None or not entry.count or frame is None:
             return
-        folder = barcodes_dir(self._session, entry.name)
-        if barcode_pdf_path(folder, entry.name).exists() and not ConfirmDialog.ask(
+        store = self._store()
+        folder = barcodes_rel(store, self._session, entry.name)
+        if store.exists(barcode_pdf_rel(folder, entry.name)) and not ConfirmDialog.ask(
             self._host,
             title=_("Replace barcodes for {name}?", name=entry.name),
             body=_(
@@ -263,6 +267,7 @@ class BarcodeTool(QObject):
         # the run cannot redirect it.
         worker = Worker(
             generate_list_labels,
+            store,
             rows,
             folder,
             entry.name,
@@ -286,7 +291,9 @@ class BarcodeTool(QObject):
 
     def _on_result(self, outcome: dict) -> None:
         name, folder = outcome["list"], outcome["folder"]
-        ours = bool(self._session) and str(barcodes_dir(self._session, name)) == folder
+        ours = bool(self._session) and str(
+            self._store().local_path(barcodes_rel(self._store(), self._session, name))
+        ) == folder
         if ours:
             self._result = outcome
             self._lists = [
@@ -332,10 +339,11 @@ class BarcodeTool(QObject):
     def print_labels(self, what: str) -> None:
         if self._run is not None or not self._session or not self._selected:
             return
-        folder = barcodes_dir(self._session, self._selected)
-        path_for = qr_pdf_path if what == "qr" else barcode_pdf_path
+        store = self._store()
+        folder = barcodes_rel(store, self._session, self._selected)
+        path_for = qr_pdf_rel if what == "qr" else barcode_pdf_rel
         pdf_printing.print_pdf(
             self._host,
-            path_for(folder, self._selected),
+            store.local_path(path_for(folder, self._selected)),
             pdf_printing.load_print_settings(PRINT_SCOPE["barcode"]),
         )

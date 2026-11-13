@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from shared.store import FileStore
 from shopify_tool import core, fulfillment_history, packed_orders, report_jobs
 
 IGNORED = {"analyzed_at", "created_at", "session_id"}
@@ -71,7 +72,7 @@ def replay_session(session_dir, work_dir) -> tuple[dict, dict[str, dict]]:
     lists = {}
     for stem in meta.get("packing_lists", []):
         report_config = {**_report_config(config, stem), "report_type": "packing_lists"}
-        report_jobs.generate_report(report_config, work_dir, result.final_df,
+        report_jobs.generate_report(FileStore(work_dir), report_config, work_dir, result.final_df,
                                     config.get("tag_categories", {}), name)
         lists[stem] = _read(Path(work_dir) / "packing_lists" / f"{stem}.json")
     return result.analysis_data, lists
