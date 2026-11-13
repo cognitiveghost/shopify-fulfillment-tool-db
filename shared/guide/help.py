@@ -1,6 +1,6 @@
 """Opens the user guide PDF from the server's Guides folder.
 
-Files are `<server_root>/Guides/<app>-<lang>.pdf`. The app's language is tried
+Files are `Guides/<app>-<lang>.pdf` on the server store. The app's language is tried
 first, then English. A server that cannot be reached counts as missing, so the
 Help action warns and never raises.
 """
@@ -15,12 +15,12 @@ from PySide6.QtWidgets import QMessageBox, QWidget
 
 from shared import i18n
 from shared.i18n import _
+from shared.store import Store
 
 
-def guide_pdf(server_root: str | Path, app: str) -> Path | None:
-    guides = Path(server_root) / "Guides"
+def guide_pdf(store: Store, app: str) -> Path | None:
     for lang in dict.fromkeys((i18n.language(), "en")):
-        path = guides / f"{app}-{lang}.pdf"
+        path = store.local_path(f"Guides/{app}-{lang}.pdf")
         try:
             if path.is_file():
                 return path
@@ -29,10 +29,10 @@ def guide_pdf(server_root: str | Path, app: str) -> Path | None:
     return None
 
 
-def open_guide(parent: QWidget | None, server_root: str | Path, app: str) -> None:
-    path = guide_pdf(server_root, app)
+def open_guide(parent: QWidget | None, store: Store, app: str) -> None:
+    path = guide_pdf(store, app)
     if path is None:
-        folder = str(Path(server_root) / "Guides")
+        folder = str(store.local_path("Guides"))
         QMessageBox.warning(parent, _("User guide"),
                             _("The user guide was not found in {folder}.", folder=folder))
         return

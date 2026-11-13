@@ -41,7 +41,7 @@ def _df(status):
 def test_save_session_state_records_this_sessions_orders(tmp_path):
     mw = _mw(tmp_path, _df("Fulfillable"))
     MainWindow.save_session_state(mw)
-    h = fulfillment_history.load(tmp_path / "fulfillment_history.csv")
+    h = fulfillment_history.load(FileStore(tmp_path), "fulfillment_history.csv")
     assert h[["Order_Number", "Session"]].values.tolist() == [["#1", "2026-09-25_1"]]
 
 

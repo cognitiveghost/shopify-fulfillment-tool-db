@@ -835,15 +835,15 @@ def _load_history_data(
     if orders_file_path is None:  # test mode
         return config.get("test_history_df", pd.DataFrame({"Order_Number": []})), True
 
-    path = fulfillment_history.history_path(profile_manager, client_id)
+    store, rel = fulfillment_history.history_location(profile_manager, client_id)
     try:
-        df = fulfillment_history.load(path)
+        df = fulfillment_history.load(store, rel)
     except fulfillment_history.HistoryUnreadable:
         logger.warning(
             "Fulfillment history unreadable; repeats not checked this run", exc_info=True
         )
         return pd.DataFrame(columns=fulfillment_history.COLUMNS), False
-    logger.info(f"Loaded {len(df)} history rows from {path}")
+    logger.info(f"Loaded {len(df)} history rows from {rel}")
     return df, True
 
 
@@ -1336,7 +1336,7 @@ def _save_results_and_reports(
     # Record this session's orders in fulfillment history. Before the stats
     # file is written, so it carries any warning.
     if history_readable:
-        history_file = fulfillment_history.history_path(profile_manager, client_id)
+        history_store, history_rel = fulfillment_history.history_location(profile_manager, client_id)
         # Only the run prunes rows of deleted session folders (AUDIT-07-L1).
         existing_sessions = (
             fulfillment_history.session_folders(Path(session_path).parent, current_session)
@@ -1344,7 +1344,7 @@ def _save_results_and_reports(
             else None
         )
         if not fulfillment_history.record_session(
-            history_file, current_session, final_df, existing_sessions=existing_sessions
+            history_store, history_rel, current_session, final_df, existing_sessions=existing_sessions
         ):
             stats["history_warning"] = HISTORY_WARNING
     else:

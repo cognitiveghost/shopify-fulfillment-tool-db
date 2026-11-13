@@ -6,20 +6,20 @@ what its run proposed (AUDIT-02-3, -4). Rows written before sessions were
 recorded have Session "" and keep the old date rule in detection.
 
 The file is never written over when it can't be read (AUDIT-02-6), and every
-write re-reads under a lock sidecar and replaces atomically, so two PCs don't
-lose each other's rows (AUDIT-02-7).
+write re-reads and then writes only if the file is still the one it read, so
+two PCs don't lose each other's rows (AUDIT-02-7). A conflict re-reads and
+merges again.
 """
 
+import io
 import logging
 import os
-import tempfile
 from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 
-from shared.atomic_write import replace_with_retry
-from shared.file_lock import locked_file
+from shared.store import FileStore, Store, StoreConflict, StoreError, StoreNotFound
 from shopify_tool import stock_ledger
 from shopify_tool.utils import get_persistent_data_path
 
@@ -27,36 +27,46 @@ logger = logging.getLogger(__name__)
 
 COLUMNS = ["Order_Number", "Execution_Date", "Session"]
 FILE_NAME = "fulfillment_history.csv"
-LOCK_TIMEOUT = 2.0
+WRITE_ATTEMPTS = 5
 
 
 class HistoryUnreadable(Exception):
     """The history file exists but can't be read; it must not be written over."""
 
 
-def history_path(profile_manager, client_id) -> Path:
+def history_location(profile_manager, client_id) -> tuple[Store, str]:
+    """The store and rel path of the history file: the client's, or the local app-data one."""
     if profile_manager and client_id:
-        return Path(profile_manager.get_client_directory(client_id)) / FILE_NAME
-    return Path(get_persistent_data_path(FILE_NAME))
+        store = profile_manager.store
+        client_file = Path(profile_manager.get_client_directory(client_id)) / FILE_NAME
+        return store, client_file.relative_to(store.local_path("")).as_posix()
+    local = Path(get_persistent_data_path(FILE_NAME))
+    return FileStore(local.parent), local.name
 
 
 def _empty() -> pd.DataFrame:
     return pd.DataFrame(columns=COLUMNS)
 
 
-def load(path) -> pd.DataFrame:
+def load(store: Store, rel: str) -> pd.DataFrame:
     try:
-        df = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")
-    except (FileNotFoundError, pd.errors.EmptyDataError):
+        raw = store.read_bytes(rel)
+    except StoreNotFound:
+        return _empty()
+    except StoreError as e:  # the share, not the file's content
+        raise HistoryUnreadable(f"{rel}: {e}") from e
+    try:
+        df = pd.read_csv(io.BytesIO(raw), dtype=str, keep_default_na=False, encoding="utf-8-sig")
+    except pd.errors.EmptyDataError:
         return _empty()  # a 0-byte file holds nothing to lose
-    except Exception as e:  # ParserError, UnicodeDecodeError, OSError on the share
-        raise HistoryUnreadable(f"{path}: {e}") from e
+    except Exception as e:  # ParserError, UnicodeDecodeError
+        raise HistoryUnreadable(f"{rel}: {e}") from e
     if not isinstance(df.index, pd.RangeIndex):
         # Every row has more fields than the header: pandas made the first
         # column the index, and the data would be written back shifted.
-        raise HistoryUnreadable(f"{path}: rows have more fields than the header")
+        raise HistoryUnreadable(f"{rel}: rows have more fields than the header")
     if "Order_Number" not in df.columns:
-        raise HistoryUnreadable(f"{path}: no Order_Number column")
+        raise HistoryUnreadable(f"{rel}: no Order_Number column")
     df = df.reindex(columns=COLUMNS, fill_value="").fillna("")
     df["Order_Number"] = df["Order_Number"].str.strip()
     return df
@@ -87,15 +97,8 @@ def _replace(history, session, ships, today) -> pd.DataFrame:
     return pd.concat([history[~mine], new])
 
 
-def _write_atomic(path: Path, df: pd.DataFrame) -> None:
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".fulfillment_history_tmp_", suffix=".csv")
-    os.close(fd)
-    try:
-        df.to_csv(tmp, index=False, columns=COLUMNS)
-        replace_with_retry(tmp, path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
+def _csv_bytes(df: pd.DataFrame) -> bytes:
+    return df.to_csv(index=False, columns=COLUMNS).encode("utf-8")
 
 
 def session_folders(sessions_dir: Path, current: str | None) -> set[str] | None:
@@ -117,7 +120,14 @@ def session_folders(sessions_dir: Path, current: str | None) -> set[str] | None:
     return names
 
 
-def record_session(path, session, df, today=None, existing_sessions: set[str] | None = None) -> bool:
+def _stamp(store: Store, rel: str):
+    try:
+        return store.stamp(rel)
+    except StoreNotFound:
+        return None
+
+
+def record_session(store: Store, rel: str, session, df, today=None, existing_sessions: set[str] | None = None) -> bool:
     """Replace `session`'s rows with the orders df ships. False = not written.
 
     `existing_sessions`, given by the run only: rows of a session whose folder
@@ -125,24 +135,31 @@ def record_session(path, session, df, today=None, existing_sessions: set[str] | 
     sessions that still exist (abandoned ones too), stay. ADR 0012 rule 5:
     nothing is pruned by age.
     """
-    path = Path(path)
     today = today or datetime.now().astimezone().strftime("%Y-%m-%d")
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path.with_name(path.name + ".lock"), "a+") as lock, locked_file(lock, timeout=LOCK_TIMEOUT):
+        ships = stock_ledger.fulfillable_orders(df)
+        for _ in range(WRITE_ATTEMPTS):
+            # Stamp before reading: a write by another PC after this line makes
+            # the stamp stale, so the write below conflicts and re-reads.
+            # ponytail: same stamp caveat as session_state.state_stamp (same-size writes in one file-time tick).
+            loaded = _stamp(store, rel)
             try:
-                history = load(path)
+                history = load(store, rel)
             except HistoryUnreadable:
-                logger.warning(f"Fulfillment history unreadable; not writing over it: {path}", exc_info=True)
+                logger.warning(f"Fulfillment history unreadable; not writing over it: {rel}", exc_info=True)
                 return False
             if existing_sessions is not None:
                 gone = (history["Session"] != "") & ~history["Session"].isin(existing_sessions)
                 if gone.any():
                     logger.info(f"Dropping {int(gone.sum())} history rows of deleted sessions")
                 history = history[~gone]
-            ships = stock_ledger.fulfillable_orders(df)
-            _write_atomic(path, _replace(history, session, ships, today))
-            return True
-    except Exception:  # FileLockError, OSError, anything pandas raises: never fail the caller
+            try:
+                store.write_bytes_if(rel, _csv_bytes(_replace(history, session, ships, today)), loaded)
+                return True
+            except StoreConflict:
+                continue  # another PC wrote since our read: merge onto its rows
+        logger.warning(f"Fulfillment history kept changing; not recorded for {session!r}")
+        return False
+    except Exception:  # StoreError, anything pandas raises: never fail the caller
         logger.exception(f"Could not record fulfillment history for {session!r}")
         return False

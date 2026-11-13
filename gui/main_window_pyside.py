@@ -1004,11 +1004,11 @@ class MainWindow(QMainWindow):
         # History follows the saved state, not the run (ADR 0012). A failure
         # heals on the next save, which rewrites this session's rows whole.
         if profile_manager is not None and client_id:
-            history_path = fulfillment_history.history_path(profile_manager, client_id)
+            history_store, history_rel = fulfillment_history.history_location(profile_manager, client_id)
             session_name = Path(session_path).name
             submit_or_run(
                 queue, session_path, HISTORY,
-                lambda: fulfillment_history.record_session(history_path, session_name, df),
+                lambda: fulfillment_history.record_session(history_store, history_rel, session_name, df),
             )
         else:
             logger.warning("No client to record fulfillment history for; not recorded")

@@ -45,7 +45,7 @@ def replay_session(session_dir, work_dir) -> tuple[dict, dict[str, dict]]:
 
     sessions = _read(client_dir / "sessions.json")
     not_yet = {e["session_name"] for e in sessions if (_when(e.get("created_at")) or created) >= created}
-    history = fulfillment_history.load(client_dir / "history.csv")
+    history = fulfillment_history.load(FileStore(client_dir), "history.csv")
     dates = pd.to_datetime(history["Execution_Date"], errors="coerce", format="mixed")
     future_legacy = (history["Session"] == "") & (dates >= pd.Timestamp(created.date()))
     history = history[~history["Session"].isin(not_yet) & ~future_legacy]

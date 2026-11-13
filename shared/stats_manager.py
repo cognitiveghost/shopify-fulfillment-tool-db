@@ -15,7 +15,7 @@ Stats/global_stats.json:
 
 Usage:
     # In Shopify Tool
-    stats_manager = StatsManager(base_path)
+    stats_manager = StatsManager(store)
     stats_manager.record_analysis(
         client_id="M",
         session_id="2025-11-05_1",
@@ -24,7 +24,7 @@ Usage:
     )
 
     # In Packing Tool
-    stats_manager = StatsManager(base_path)
+    stats_manager = StatsManager(store)
     stats_manager.record_packing(
         client_id="M",
         session_id="2025-11-05_1",
@@ -35,16 +35,15 @@ Usage:
     )
 """
 
-import json
-import os
-import tempfile
 import time
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
-from shared.file_lock import FileLockError, locked_file
+from shared.file_lock import FileLockError  # noqa: F401  re-exported; tests check it is the shared class
 from shared.metadata_utils import get_current_timestamp, parse_timestamp
+from shared.store import FileStore, Store, StoreError, StoreNotFound
+
+STATS_REL = "Stats/global_stats.json"
 
 
 class StatsManagerError(Exception):
@@ -81,15 +80,14 @@ class StatsManager:
     }
 
     Attributes:
-        base_path (Path): Base path to 0UFulfilment directory
-        stats_file (Path): Path to global_stats.json
+        store (Store): server store holding Stats/global_stats.json
         max_retries (int): Maximum number of retry attempts for file operations
         retry_delay (float): Delay in seconds between retries
     """
 
     def __init__(
         self,
-        base_path: str,
+        store: Store,
         max_retries: int = 5,
         retry_delay: float = 0.1
     ):
@@ -97,16 +95,13 @@ class StatsManager:
         Initialize the StatsManager.
 
         Args:
-            base_path: Path to 0UFulfilment directory (e.g., \\\\server\\...\\0UFulfilment)
-            max_retries: Maximum number of retry attempts for locked files
+            store: The server store (FileStore on the 0UFulfilment directory)
+            max_retries: Maximum number of retry attempts for store errors
             retry_delay: Delay in seconds between retry attempts
         """
-        self.base_path = Path(base_path)
-        self.stats_file = self.base_path / "Stats" / "global_stats.json"
+        self.store = store
         self.max_retries = max_retries
         self.retry_delay = retry_delay
-
-        self.stats_file.parent.mkdir(parents=True, exist_ok=True)
 
     def _get_default_stats(self) -> dict[str, Any]:
         """Get default statistics structure."""
@@ -123,136 +118,64 @@ class StatsManager:
             "version": "2.0",
         }
 
-    def _load_stats(self) -> dict[str, Any]:
-        """Load statistics from file with file locking."""
-        if not self.stats_file.exists():
+    def _with_defaults(self, stats: Any) -> dict[str, Any]:
+        """Stats as read, with missing keys filled in; defaults if absent or not a dict."""
+        if not isinstance(stats, dict):
             return self._get_default_stats()
+        default = self._get_default_stats()
+        for key in default:
+            if key not in stats:
+                stats[key] = default[key]
+        return stats
 
+    def _with_retries(self, what: str, op):
+        """Run op(); a store error is retried, then raised as StatsManagerError."""
         for attempt in range(self.max_retries):
             try:
-                mode = 'r+' if self.stats_file.exists() else 'w+'
-                with open(self.stats_file, mode, encoding='utf-8') as f, locked_file(f):
-                    f.seek(0)
-                    content = f.read()
-                    if not content.strip():
-                        return self._get_default_stats()
-
-                    stats = json.loads(content)
-
-                    if not isinstance(stats, dict):
-                        return self._get_default_stats()
-
-                    default = self._get_default_stats()
-                    for key in default:
-                        if key not in stats:
-                            stats[key] = default[key]
-
-                    return stats
-
-            except json.JSONDecodeError:
-                return self._get_default_stats()
-            except (OSError, FileLockError) as e:
+                return op()
+            except (StoreError, OSError) as e:
                 if attempt == self.max_retries - 1:
-                    raise StatsManagerError(f"Failed to load stats after {self.max_retries} attempts: {e}")
+                    raise StatsManagerError(f"Failed to {what} after {self.max_retries} attempts: {e}") from e
                 time.sleep(self.retry_delay * (attempt + 1))
 
-        return self._get_default_stats()
+    @staticmethod
+    def _unreadable(e: StoreError) -> bool:
+        """Invalid JSON (a ValueError under StoreError) counts as no stats, as it always has."""
+        return isinstance(e.__cause__, ValueError)
 
-    def _save_stats(self, stats: dict[str, Any]) -> None:
-        """Save statistics to file with file locking."""
-        stats["last_updated"] = get_current_timestamp()
-
-        for attempt in range(self.max_retries):
+    def _load_stats(self) -> dict[str, Any]:
+        """Load statistics; absent or unreadable JSON gives defaults."""
+        def read():
             try:
-                self.stats_file.parent.mkdir(parents=True, exist_ok=True)
+                return self.store.read_json(STATS_REL)
+            except StoreNotFound:
+                return None
+            except StoreError as e:
+                if self._unreadable(e):
+                    return None
+                raise
 
-                mode = 'r+' if self.stats_file.exists() else 'w+'
-                with open(self.stats_file, mode, encoding='utf-8') as f, locked_file(f):
-                    f.seek(0)
-                    f.truncate()
-                    json.dump(stats, f, indent=4, ensure_ascii=False)
-                    f.flush()
-                    os.fsync(f.fileno())
-
-                return
-
-            except (OSError, FileLockError) as e:
-                if attempt == self.max_retries - 1:
-                    raise StatsManagerError(f"Failed to save stats after {self.max_retries} attempts: {e}")
-                time.sleep(self.retry_delay * (attempt + 1))
+        return self._with_defaults(self._with_retries("load stats", read))
 
     def _atomic_update(self, update_func) -> None:
-        """Perform an atomic update of statistics.
+        """Read-modify-write of the stats under the Store's lock (Store.update_json)."""
+        def fn(current):
+            stats = self._with_defaults(current)
+            update_func(stats)
+            stats["last_updated"] = get_current_timestamp()
+            return stats
 
-        NOTE: this deliberately does NOT delegate to
-        shared.atomic_write.atomic_write_json's temp+os.replace() pattern.
-        The advisory lock in locked_file() is held on this specific open
-        file handle for the entire read-modify-write; replacing the file
-        at this path with a new inode (what os.replace() does) would
-        detach the lock from the file everyone else is waiting on. Instead,
-        the new content is fully serialized to a throwaway temp file first
-        (so a failure there never touches the locked original), and only
-        written into the still-open, still-locked handle once it is known
-        good. See tests/test_atomic_write.py::
-        test_stats_manager_atomic_update_is_actually_crash_safe.
-        """
-        for attempt in range(self.max_retries):
+        def update():
             try:
-                if not self.stats_file.exists():
-                    self.stats_file.parent.mkdir(parents=True, exist_ok=True)
-                    with open(self.stats_file, 'w', encoding='utf-8') as f:
-                        json.dump(self._get_default_stats(), f, indent=4)
+                self.store.update_json(STATS_REL, fn)
+            except StoreError as e:
+                if not self._unreadable(e):
+                    raise
+                # Unreadable JSON: start over from defaults, as the old code did.
+                self.store.write_json(STATS_REL, self._get_default_stats())
+                self.store.update_json(STATS_REL, fn)
 
-                with open(self.stats_file, 'r+', encoding='utf-8') as f, locked_file(f):
-                    f.seek(0)
-                    content = f.read()
-                    if content.strip():
-                        try:
-                            stats = json.loads(content)
-                        except json.JSONDecodeError:
-                            stats = self._get_default_stats()
-                    else:
-                        stats = self._get_default_stats()
-
-                    if not isinstance(stats, dict):
-                        stats = self._get_default_stats()
-
-                    default = self._get_default_stats()
-                    for key in default:
-                        if key not in stats:
-                            stats[key] = default[key]
-
-                    update_func(stats)
-
-                    stats["last_updated"] = get_current_timestamp()
-
-                    tmp_fd, tmp_name = tempfile.mkstemp(
-                        dir=self.stats_file.parent,
-                        prefix=f".{self.stats_file.stem}_tmp_",
-                        suffix=self.stats_file.suffix,
-                    )
-                    try:
-                        with os.fdopen(tmp_fd, 'w', encoding='utf-8') as tmp_f:
-                            json.dump(stats, tmp_f, indent=4, ensure_ascii=False)
-                        new_content = Path(tmp_name).read_text(encoding='utf-8')
-                    finally:
-                        try:
-                            os.unlink(tmp_name)
-                        except OSError:
-                            pass
-
-                    f.seek(0)
-                    f.truncate()
-                    f.write(new_content)
-                    f.flush()
-                    os.fsync(f.fileno())
-
-                return  # Success
-
-            except (OSError, FileLockError) as e:
-                if attempt == self.max_retries - 1:
-                    raise StatsManagerError(f"Failed to update stats after {self.max_retries} attempts: {e}")
-                time.sleep(self.retry_delay * (attempt + 1))
+        self._with_retries("update stats", update)
 
     def record_analysis(
         self,
@@ -529,15 +452,18 @@ class StatsManager:
 
         WARNING: This will delete all historical data. Use with caution.
         """
-        default_stats = self._get_default_stats()
-        self._save_stats(default_stats)
+        def reset(stats):
+            stats.clear()
+            stats.update(self._get_default_stats())
+
+        self._atomic_update(reset)
 
 
 if __name__ == "__main__":
     import tempfile as _tempfile
 
     with _tempfile.TemporaryDirectory() as tmp:
-        manager = StatsManager(tmp)
+        manager = StatsManager(FileStore(tmp))
 
         manager.record_analysis(
             client_id="M",

@@ -212,7 +212,7 @@ def test_order_marked_fulfillable_by_a_person_is_not_flagged_next_day_without_pa
     assert after.to_dict() == {"#1": "Not Fulfillable", "#2": "Fulfillable"}
     # save_session_state is a Mock here; this is the writer it calls.
     fulfillment_history.record_session(
-        shop.history, "2026-09-25_1", mw.analysis_results_df
+        FileStore(shop.dir), shop.history.name, "2026-09-25_1", mw.analysis_results_df
     )
     # #2 shipped without Packing Tool, so the packed signal stays empty.
     df2 = shop.run(lines, [("A", 3)], session_path=str(shop.dir / "2026-09-25_2"))
@@ -229,7 +229,7 @@ def test_order_held_after_analysis_is_not_a_repeat_next_day(shop):
         "Not Fulfillable"
     }
     fulfillment_history.record_session(
-        shop.history, "2026-09-25_1", mw.analysis_results_df
+        FileStore(shop.dir), shop.history.name, "2026-09-25_1", mw.analysis_results_df
     )
     df2 = shop.run(
         [("#1", "A", 1)], [("A", 5)], session_path=str(shop.dir / "2026-09-25_2")

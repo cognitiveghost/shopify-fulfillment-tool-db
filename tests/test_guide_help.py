@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QMessageBox
 
 from shared import i18n
 from shared.guide import help as guide_help
+from shared.store import FileStore
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -29,17 +30,17 @@ def _guide(server_root: Path, name: str) -> Path:
 def test_guide_pdf_language_file(tmp_path, bulgarian):
     expected = _guide(tmp_path, "fulfilment-bg.pdf")
 
-    assert guide_help.guide_pdf(tmp_path, "fulfilment") == expected
+    assert guide_help.guide_pdf(FileStore(tmp_path), "fulfilment") == expected
 
 
 def test_guide_pdf_falls_back_to_en(tmp_path, bulgarian):
     expected = _guide(tmp_path, "fulfilment-en.pdf")
 
-    assert guide_help.guide_pdf(tmp_path, "fulfilment") == expected
+    assert guide_help.guide_pdf(FileStore(tmp_path), "fulfilment") == expected
 
 
 def test_guide_pdf_none_when_missing(tmp_path):
-    assert guide_help.guide_pdf(tmp_path, "fulfilment") is None
+    assert guide_help.guide_pdf(FileStore(tmp_path), "fulfilment") is None
 
 
 def test_open_guide_opens_file(tmp_path, monkeypatch):
@@ -47,7 +48,7 @@ def test_open_guide_opens_file(tmp_path, monkeypatch):
     opened = []
     monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url) or True)
 
-    guide_help.open_guide(None, tmp_path, "fulfilment")
+    guide_help.open_guide(None, FileStore(tmp_path), "fulfilment")
 
     assert len(opened) == 1
     assert opened[0].toLocalFile() == str(path)
@@ -59,7 +60,7 @@ def test_open_guide_missing_warns(tmp_path, monkeypatch):
     monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args))
     monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url) or True)
 
-    guide_help.open_guide(None, tmp_path, "fulfilment")
+    guide_help.open_guide(None, FileStore(tmp_path), "fulfilment")
 
     assert len(warnings) == 1
     assert str(Path(tmp_path) / "Guides") in warnings[0][2]
@@ -72,7 +73,7 @@ def test_open_guide_warns_when_nothing_opens_it(tmp_path, monkeypatch):
     monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args))
     monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: False)
 
-    guide_help.open_guide(None, tmp_path, "fulfilment")
+    guide_help.open_guide(None, FileStore(tmp_path), "fulfilment")
 
     assert len(warnings) == 1
     assert str(path) in warnings[0][2]
@@ -89,4 +90,4 @@ def test_guide_pdf_error_on_language_file_still_tries_en(tmp_path, bulgarian, mo
 
     monkeypatch.setattr(Path, "is_file", flaky)
 
-    assert guide_help.guide_pdf(tmp_path, "fulfilment") == expected
+    assert guide_help.guide_pdf(FileStore(tmp_path), "fulfilment") == expected

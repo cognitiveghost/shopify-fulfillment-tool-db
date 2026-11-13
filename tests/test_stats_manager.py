@@ -11,10 +11,11 @@ from datetime import datetime, timedelta
 from shared.file_lock import FileLockError as SharedFileLockError
 from shared.stats_manager import FileLockError as StatsFileLockError
 from shared.stats_manager import StatsManager
+from shared.store import FileStore
 
 
 def test_default_stats_version_is_the_unified_value(tmp_path):
-    manager = StatsManager(str(tmp_path))
+    manager = StatsManager(FileStore(tmp_path))
     assert manager._get_default_stats()["version"] == "2.0"
 
 
@@ -28,7 +29,7 @@ def test_file_lock_error_is_the_one_shared_class():
 
 
 def test_record_analysis_updates_global_and_client_counters(tmp_path):
-    manager = StatsManager(str(tmp_path))
+    manager = StatsManager(FileStore(tmp_path))
     manager.record_analysis(
         client_id="M",
         session_id="2026-01-01_1",
@@ -45,7 +46,7 @@ def test_record_analysis_updates_global_and_client_counters(tmp_path):
 
 
 def test_record_packing_updates_global_and_client_counters(tmp_path):
-    manager = StatsManager(str(tmp_path))
+    manager = StatsManager(FileStore(tmp_path))
     manager.record_packing(
         client_id="M",
         session_id="2026-01-01_1",
@@ -66,7 +67,7 @@ def test_record_packing_updates_global_and_client_counters(tmp_path):
 def test_record_analysis_and_record_packing_share_one_client_entry(tmp_path):
     """Both apps write the same by_client[client_id] entry in the same
     file — this is the whole point of the unified StatsManager."""
-    manager = StatsManager(str(tmp_path))
+    manager = StatsManager(FileStore(tmp_path))
     manager.record_analysis(client_id="M", session_id="s1", orders_count=150)
     manager.record_packing(
         client_id="M", session_id="s1", worker_id="w1",
@@ -80,7 +81,7 @@ def test_record_analysis_and_record_packing_share_one_client_entry(tmp_path):
 
 
 def test_get_all_clients_stats_returns_every_client(tmp_path):
-    manager = StatsManager(str(tmp_path))
+    manager = StatsManager(FileStore(tmp_path))
     manager.record_analysis(client_id="M", session_id="s1", orders_count=10)
     manager.record_analysis(client_id="A", session_id="s2", orders_count=20)
 
@@ -89,7 +90,7 @@ def test_get_all_clients_stats_returns_every_client(tmp_path):
 
 
 def test_get_analysis_history_filters_by_client_and_limit(tmp_path):
-    manager = StatsManager(str(tmp_path))
+    manager = StatsManager(FileStore(tmp_path))
     manager.record_analysis(client_id="M", session_id="s1", orders_count=10)
     manager.record_analysis(client_id="A", session_id="s2", orders_count=20)
     manager.record_analysis(client_id="M", session_id="s3", orders_count=30)
@@ -103,7 +104,7 @@ def test_get_analysis_history_filters_by_client_and_limit(tmp_path):
 
 
 def test_get_packing_history_filters_by_worker(tmp_path):
-    manager = StatsManager(str(tmp_path))
+    manager = StatsManager(FileStore(tmp_path))
     manager.record_packing(client_id="M", session_id="s1", worker_id="w1", orders_count=1, items_count=1)
     manager.record_packing(client_id="M", session_id="s2", worker_id="w2", orders_count=1, items_count=1)
 
@@ -113,7 +114,7 @@ def test_get_packing_history_filters_by_worker(tmp_path):
 
 
 def test_record_label_print_updates_counters_and_history(tmp_path):
-    manager = StatsManager(str(tmp_path))
+    manager = StatsManager(FileStore(tmp_path))
     manager.record_label_print(client_id="M", sku="SKU-1", copies=3)
     manager.record_label_print(client_id="M", sku="SKU-2", copies=2)
 
@@ -131,7 +132,7 @@ def test_get_label_print_history_accepts_naive_dates_from_the_gui(tmp_path):
     not happen once every write path in the merged StatsManager produces
     timezone-aware timestamps.
     """
-    manager = StatsManager(str(tmp_path))
+    manager = StatsManager(FileStore(tmp_path))
     manager.record_label_print(client_id="M", sku="SKU-1", copies=1)
 
     naive_start = datetime.now() - timedelta(days=1)
@@ -142,7 +143,7 @@ def test_get_label_print_history_accepts_naive_dates_from_the_gui(tmp_path):
 
 
 def test_get_label_print_history_filters_out_of_range_dates(tmp_path):
-    manager = StatsManager(str(tmp_path))
+    manager = StatsManager(FileStore(tmp_path))
     manager.record_label_print(client_id="M", sku="SKU-1", copies=1)
 
     far_future_start = datetime.now() + timedelta(days=30)
@@ -151,10 +152,26 @@ def test_get_label_print_history_filters_out_of_range_dates(tmp_path):
 
 
 def test_reset_stats_clears_history_and_counters(tmp_path):
-    manager = StatsManager(str(tmp_path))
+    manager = StatsManager(FileStore(tmp_path))
     manager.record_packing(client_id="M", session_id="s1", worker_id="w1", orders_count=1, items_count=1)
 
     manager.reset_stats()
 
     assert manager.get_global_stats()["total_orders_packed"] == 0
     assert manager.get_packing_history() == []
+
+
+def test_unreadable_stats_file_reads_as_empty_stats(tmp_path):
+    """Corrupt JSON counts as no stats, as it always has: reads give defaults."""
+    (tmp_path / "Stats").mkdir()
+    (tmp_path / "Stats" / "global_stats.json").write_text("{not json", encoding="utf-8")
+    manager = StatsManager(FileStore(tmp_path))
+    assert manager.get_global_stats()["total_orders_analyzed"] == 0
+
+
+def test_unreadable_stats_file_is_started_over_by_the_next_record(tmp_path):
+    (tmp_path / "Stats").mkdir()
+    (tmp_path / "Stats" / "global_stats.json").write_text("", encoding="utf-8")
+    manager = StatsManager(FileStore(tmp_path))
+    manager.record_analysis(client_id="M", session_id="s1", orders_count=7)
+    assert manager.get_global_stats()["total_orders_analyzed"] == 7

@@ -385,13 +385,13 @@ class ActionsHandler(QObject):
         see on_analysis_complete for why this must never run inline on the Qt
         main thread.
         """
-        base_path = str(self.mw.profile_manager.base_path)
+        store = self.mw.profile_manager.store
         session_path = self.mw.session_path
         client_id = self.mw.current_client_id
 
         worker = Worker(
             self._record_analysis_stats_job,
-            base_path,
+            store,
             session_path,
             client_id,
             orders_count,
@@ -408,7 +408,7 @@ class ActionsHandler(QObject):
 
     def _record_analysis_stats_job(
         self,
-        base_path,
+        store,
         session_path,
         client_id,
         orders_count,
@@ -422,7 +422,7 @@ class ActionsHandler(QObject):
 
             self.log.info("Recording analysis statistics to server...")
 
-            stats_mgr = StatsManager(base_path=base_path)
+            stats_mgr = StatsManager(store)
             session_name = (
                 derive_session_id(session_path) if session_path else "unknown"
             )

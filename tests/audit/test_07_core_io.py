@@ -156,7 +156,7 @@ def test_AUDIT_07_H2_an_edit_returns_to_the_person_quickly(benchmark_frame, tmp_
 
     assert seconds < 1.0
     assert pc.write_queue.flush(timeout=30)
-    history = fulfillment_history.load(fulfillment_history.history_path(pc.profile_manager, "M"))
+    history = fulfillment_history.load(*fulfillment_history.history_location(pc.profile_manager, "M"))
     assert (history["Session"] == Path(pc.session_path).name).any()
     info = json.loads((Path(pc.session_path) / "session_info.json").read_text(encoding="utf-8"))
     assert session_state.order_counts(pc.analysis_results_df).items() <= info.items()
@@ -166,12 +166,12 @@ def test_a_run_drops_history_rows_of_deleted_sessions(sessions, analysis_run):
     """AUDIT-07-L1: only the run prunes, and only folders that are gone."""
     kept = Path(sessions.create_session("M"))
     path = sessions.create_session("M")
-    history = fulfillment_history.history_path(sessions.profile_manager, "M")
+    store, rel = fulfillment_history.history_location(sessions.profile_manager, "M")
     pd.DataFrame({"Order_Number": ["#8", "#9", "#7"], "Execution_Date": ["2026-01-01"] * 3,
-                  "Session": ["gone", kept.name, ""]}).to_csv(history, index=False)
+                  "Session": ["gone", kept.name, ""]}).to_csv(store.local_path(rel), index=False)
     ok, msg, _df, _stats = analysis_run(path)
     assert ok, msg
-    rows = fulfillment_history.load(history)
+    rows = fulfillment_history.load(store, rel)
     assert set(rows["Session"]) == {kept.name, "", Path(path).name}
 
 
@@ -361,7 +361,7 @@ def _write_state(tmp_path):
 
 def _write_history(tmp_path):
     df = pd.DataFrame({"Order_Number": ["#1"], "Execution_Date": ["2026-10-05"], "Session": ["S"]})
-    fulfillment_history._write_atomic(tmp_path / "h.csv", df)
+    FileStore(tmp_path).write_bytes("h.csv", df.to_csv(index=False).encode("utf-8"))
     return pd.read_csv(tmp_path / "h.csv", dtype=str).equals(df)
 
 
