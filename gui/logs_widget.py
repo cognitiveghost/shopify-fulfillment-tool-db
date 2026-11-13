@@ -33,7 +33,7 @@ WRAP_KEY = "logs/wrap"
 def _settings() -> QSettings:
     """This PC's store, the same pair theme_manager uses. A function so tests
     can point it at an INI file under tmp_path."""
-    return QSettings("ShopifyFulfillmentTool", "FulfillmentApp")
+    return QSettings("ShopifyTool-DB", "FulfillmentApp")
 
 
 class LogsWidget(QWidget):

@@ -51,7 +51,7 @@ def test_a_page_name_that_no_longer_exists_falls_back(
     """Nav groups have gained entries twice already. Storing a row index
     would silently point at a different page; a stale *name* must degrade to
     the first entry rather than raise or select nothing."""
-    QSettings("ShopifyFulfillmentTool", "FulfillmentApp").setValue(
+    QSettings("ShopifyTool-DB", "FulfillmentApp").setValue(
         SettingsWindow.NAV_SETTINGS_KEY, "A Page That Was Removed"
     )
 

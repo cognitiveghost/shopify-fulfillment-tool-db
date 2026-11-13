@@ -133,7 +133,7 @@ def qapp():
 
 @pytest.fixture
 def print_settings_store(monkeypatch):
-    """The Tools page reads and writes QSettings("ShopifyFulfillmentTool",
+    """The Tools page reads and writes QSettings("ShopifyTool-DB",
     "Printing") -- the developer's real per-PC printer choice. Tests that edit
     a print setting through ToolsWidget get an in-memory store keyed by scope
     instead. ToolsWidget and both tools call gui.pdf_printing through the
@@ -325,7 +325,7 @@ def clean_nav_setting():
     """QSettings is process-global and writes to the real ~/.config store, so
     any test that builds a SettingsWindow would otherwise leave the developer's
     (and CI's) last-page setting behind and leak it into the next run."""
-    store = QSettings("ShopifyFulfillmentTool", "FulfillmentApp")
+    store = QSettings("ShopifyTool-DB", "FulfillmentApp")
     keys = (SettingsWindow.NAV_SETTINGS_KEY, _COLLAPSED_KEY, "language")
     for key in keys:
         store.remove(key)
@@ -365,7 +365,7 @@ def reset_theme_and_density():
     )
     from shared import theme as shared_theme
 
-    store = QSettings("ShopifyFulfillmentTool", "FulfillmentApp")
+    store = QSettings("ShopifyTool-DB", "FulfillmentApp")
 
     def _reset():
         store.remove("theme")

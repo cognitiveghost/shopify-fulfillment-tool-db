@@ -25,7 +25,7 @@ from shopify_tool import label_printing
 
 logger = logging.getLogger(__name__)
 
-_SETTINGS = ("ShopifyFulfillmentTool", "Printing")
+_SETTINGS = ("ShopifyTool-DB", "Printing")
 
 
 def load_print_settings(scope: str) -> dict:

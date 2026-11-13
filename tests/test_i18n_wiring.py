@@ -22,14 +22,14 @@ def main_window(tmp_path, monkeypatch):
 
 
 def test_saved_language_is_applied_before_the_window(monkeypatch):
-    QSettings("ShopifyFulfillmentTool", "FulfillmentApp").setValue("language", "bg")
+    QSettings("ShopifyTool-DB", "FulfillmentApp").setValue("language", "bg")
     assert gui_main.apply_saved_language() == "bg"
     assert i18n.language() == "bg"
     assert i18n._("Restart now") == "Рестартирай сега"
 
 
 def test_default_is_english():
-    QSettings("ShopifyFulfillmentTool", "FulfillmentApp").remove("language")
+    QSettings("ShopifyTool-DB", "FulfillmentApp").remove("language")
     assert gui_main.apply_saved_language() == "en"
 
 

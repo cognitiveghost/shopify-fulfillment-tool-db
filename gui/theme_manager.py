@@ -140,7 +140,7 @@ class ThemeManager(QObject):
 
     def _save_theme_preference(self):
         try:
-            settings = QSettings("ShopifyFulfillmentTool", "FulfillmentApp")
+            settings = QSettings("ShopifyTool-DB", "FulfillmentApp")
             settings.setValue("theme", self._current_theme_name)
             settings.sync()
         except Exception:
@@ -148,7 +148,7 @@ class ThemeManager(QObject):
 
     def _load_theme_preference(self):
         try:
-            settings = QSettings("ShopifyFulfillmentTool", "FulfillmentApp")
+            settings = QSettings("ShopifyTool-DB", "FulfillmentApp")
             saved_theme = settings.value("theme", "light")
             self._current_theme_name = (
                 saved_theme if saved_theme in ("light", "dark") else "light"
@@ -159,7 +159,7 @@ class ThemeManager(QObject):
 
     def _save_density_preference(self):
         try:
-            settings = QSettings("ShopifyFulfillmentTool", "FulfillmentApp")
+            settings = QSettings("ShopifyTool-DB", "FulfillmentApp")
             settings.setValue("density", get_density())
             settings.sync()
         except Exception:
@@ -167,7 +167,7 @@ class ThemeManager(QObject):
 
     def _load_density_preference(self):
         try:
-            settings = QSettings("ShopifyFulfillmentTool", "FulfillmentApp")
+            settings = QSettings("ShopifyTool-DB", "FulfillmentApp")
             saved = settings.value("density", DEFAULT_DENSITY)
             set_density(saved if saved in DENSITY_PROFILES else DEFAULT_DENSITY)
         except Exception:

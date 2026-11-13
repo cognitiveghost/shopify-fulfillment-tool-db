@@ -38,7 +38,7 @@ _COLLAPSED_KEY = "shell/sidebar_collapsed"
 
 
 def _shell_settings() -> QSettings:
-    return QSettings("ShopifyFulfillmentTool", "FulfillmentApp")
+    return QSettings("ShopifyTool-DB", "FulfillmentApp")
 
 
 def age_text(delta) -> str:
@@ -203,7 +203,7 @@ class UIManager:
             lambda: self.mw.actions_handler.open_settings_window()
         )
         sidebar.themeRequested.connect(switch_theme)
-        settings = QSettings("ShopifyFulfillmentTool", "FulfillmentApp")
+        settings = QSettings("ShopifyTool-DB", "FulfillmentApp")
 
         def on_language(code):
             switch_language(self.mw, settings, code)
@@ -407,7 +407,7 @@ class UIManager:
         degraded launch, so the shell has to hear about a success.
         """
         ConnectionSettingsDialog(
-            self.mw, "ShopifyTool", "FULFILLMENT_SERVER_PATH", PROD_SERVER_PATH
+            self.mw, "ShopifyTool-DB", "FULFILLMENT_SERVER_PATH", PROD_SERVER_PATH
         ).exec()
         self.mw.recheck_connection()
 

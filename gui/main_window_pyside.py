@@ -60,6 +60,9 @@ from shopify_tool.undo_manager import UndoManager
 logger = logging.getLogger(__name__)
 
 
+_DB_TRIAL = " (DB trial)"  # brand suffix, not translated
+
+
 def follow_inventory_memory(profile_manager, client_id: str, session_path: str, df: pd.DataFrame) -> None:
     """Memory follows this session's state only while this session owns it.
 
@@ -140,14 +143,14 @@ class MainWindow(QMainWindow):
     def __init__(self):
         """Initializes the MainWindow, sets up UI, and connects signals."""
         super().__init__()
-        self.setWindowTitle(f"{APP_NAME} {__version__}")
+        self.setWindowTitle(" ".join((APP_NAME, __version__)) + _DB_TRIAL)
 
         from PySide6.QtCore import QSettings
 
         from shared.theme import restore_window_geometry
 
         self._geometry_settings = QSettings(
-            "ShopifyFulfillmentTool", "MainWindowGeometry"
+            "ShopifyTool-DB", "MainWindowGeometry"
         )
         if not restore_window_geometry(self, self._geometry_settings):
             self.setGeometry(100, 100, 1100, 900)
@@ -199,7 +202,7 @@ class MainWindow(QMainWindow):
         self.ui_manager.create_widgets()
         self.update_flow = UpdateFlow(
             self, self.sidebar.update_button, lambda text: toast(self, text),
-            AppIdentity("cognitiveghost/shopify-fulfillment-tool", "FulfilmentTool", "FulfilmentTool.exe"),
+            AppIdentity("cognitiveghost/shopify-fulfillment-tool-db", "FulfilmentTool-DB", "FulfilmentTool-DB.exe"),
             __version__,
         )
         self.update_flow.start()

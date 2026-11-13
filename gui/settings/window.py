@@ -616,7 +616,7 @@ class SettingsWindow(QDialog):
     def _restore_nav_selection(self) -> None:
         """Select the requested page, else the last-viewed one, else the first."""
         wanted = self._initial_page or QSettings(
-            "ShopifyFulfillmentTool", "FulfillmentApp"
+            "ShopifyTool-DB", "FulfillmentApp"
         ).value(self.NAV_SETTINGS_KEY)
         items = self._page_items()
         # _build_settings_nav refuses an empty group, so items is never empty.
@@ -669,7 +669,7 @@ class SettingsWindow(QDialog):
         if index is not None:
             self._web_host.show_page(WEB_PAGE_KEYS[_nav_name(current)])
             self.tab_widget.setCurrentIndex(index)
-            QSettings("ShopifyFulfillmentTool", "FulfillmentApp").setValue(
+            QSettings("ShopifyTool-DB", "FulfillmentApp").setValue(
                 self.NAV_SETTINGS_KEY, _nav_name(current)
             )
 

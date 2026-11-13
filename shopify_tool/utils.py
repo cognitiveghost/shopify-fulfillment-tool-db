@@ -27,7 +27,7 @@ def get_persistent_data_path(filename):
     """
     # Use APPDATA for Windows, or user's home directory for other platforms
     app_data_path = os.getenv("APPDATA") or os.path.expanduser("~")
-    app_dir = os.path.join(app_data_path, "ShopifyFulfillmentTool")
+    app_dir = os.path.join(app_data_path, "ShopifyFulfillmentTool-DB")
 
     try:
         os.makedirs(app_dir, exist_ok=True)

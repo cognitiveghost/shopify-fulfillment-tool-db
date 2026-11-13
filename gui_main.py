@@ -70,7 +70,7 @@ from shopify_tool import APP_NAME, __version__
 
 
 def apply_saved_language() -> str:
-    code = str(QSettings("ShopifyFulfillmentTool", "FulfillmentApp").value("language", i18n.DEFAULT_LANGUAGE))
+    code = str(QSettings("ShopifyTool-DB", "FulfillmentApp").value("language", i18n.DEFAULT_LANGUAGE))
     i18n.set_language(code, i18n.catalogue_files(APP_ROOT, code))
     return i18n.language()
 

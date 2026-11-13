@@ -171,4 +171,4 @@ def test_a_shortcut_cannot_walk_past_a_disabled_rail_button(offline_window):
 def test_the_title_names_the_app_and_its_version(offline_window):
     from shopify_tool import APP_NAME, __version__
 
-    assert offline_window.windowTitle() == f"{APP_NAME} {__version__}"
+    assert offline_window.windowTitle() == f"{APP_NAME} {__version__} (DB trial)"

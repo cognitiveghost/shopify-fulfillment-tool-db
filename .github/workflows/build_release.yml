@@ -127,7 +127,7 @@ jobs:
         # static analysis -- omitting this crashes any frozen build on first
         # barcode import with "ModuleNotFoundError: reportlab.graphics.barcode.code93".
         run: >
-          pyinstaller --name FulfilmentTool --onedir --windowed --noconfirm
+          pyinstaller --name FulfilmentTool-DB --onedir --windowed --noconfirm
           --icon shared/assets/brand/fulfilment-tool.ico
           --add-data "shopify_tool/templates;shopify_tool/templates"
           --add-data "shared/assets;shared/assets"
@@ -158,19 +158,19 @@ jobs:
         shell: pwsh
         run: |
           foreach ($name in "package.svg", "Inter-Regular.ttf", "QtWebEngineProcess.exe", "results.html", "setup.html", "browse.html", "tools.html", "logs.html", "pikepdf", "fulfilment-tool.ico", "qico.dll", "bg.json", "scan-barcode.svg", "download.svg", "zxingcpp*.pyd") {
-            if (-not (Get-ChildItem -Path "dist\FulfilmentTool" -Recurse -Filter $name)) {
+            if (-not (Get-ChildItem -Path "dist\FulfilmentTool-DB" -Recurse -Filter $name)) {
               throw "PyInstaller did not bundle $name."
             }
           }
       - name: Bundle GTK DLLs
         shell: pwsh
         run: |
-          Copy-Item -Recurse -Path "C:\msys64\mingw64\bin" -Destination "dist\FulfilmentTool\gtk-dlls"
-          Copy-Item -Recurse -Path "C:\msys64\mingw64\etc" -Destination "dist\FulfilmentTool\gtk-dlls\etc"
+          Copy-Item -Recurse -Path "C:\msys64\mingw64\bin" -Destination "dist\FulfilmentTool-DB\gtk-dlls"
+          Copy-Item -Recurse -Path "C:\msys64\mingw64\etc" -Destination "dist\FulfilmentTool-DB\gtk-dlls\etc"
       - name: Report bundle size
         shell: pwsh
         run: |
-          $files = Get-ChildItem -Path "dist\FulfilmentTool" -Recurse -File
+          $files = Get-ChildItem -Path "dist\FulfilmentTool-DB" -Recurse -File
           $mb = ($files | Measure-Object -Property Length -Sum).Sum / 1MB
           $line = "Frozen bundle: {0:N0} MB across {1:N0} files" -f $mb, $files.Count
           Write-Output $line
@@ -178,13 +178,13 @@ jobs:
       - name: Zip the bundle
         shell: pwsh
         run: |
-          $name = if ($env:VERSION) { "FulfilmentTool-$env:VERSION" } else { "FulfilmentTool-gate" }
-          Compress-Archive -Path "dist\FulfilmentTool\*" -DestinationPath "$name.zip"
+          $name = if ($env:VERSION) { "FulfilmentTool-DB-$env:VERSION" } else { "FulfilmentTool-DB-gate" }
+          Compress-Archive -Path "dist\FulfilmentTool-DB\*" -DestinationPath "$name.zip"
       - name: Upload the bundle
         uses: actions/upload-artifact@v7
         with:
           name: bundle
-          path: FulfilmentTool-*.zip
+          path: FulfilmentTool-DB-*.zip
           # Already a zip; re-compressing several hundred MB buys nothing.
           compression-level: 0
 
@@ -207,11 +207,11 @@ jobs:
         with:
           name: bundle
       - name: Checksum
-        run: sha256sum "FulfilmentTool-$VERSION.zip" > "FulfilmentTool-$VERSION.zip.sha256"
+        run: sha256sum "FulfilmentTool-DB-$VERSION.zip" > "FulfilmentTool-DB-$VERSION.zip.sha256"
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v4
         with:
-          subject-path: FulfilmentTool-${{ needs.version.outputs.version }}.zip
+          subject-path: FulfilmentTool-DB-${{ needs.version.outputs.version }}.zip
       - name: Create the release
         # Last, so a failed build or attestation leaves no tag behind.
         env:
@@ -219,6 +219,6 @@ jobs:
           RELEASE_KIND: ${{ inputs.prerelease && '--prerelease' || '--latest' }}
         run: >
           gh release create "$VERSION"
-          "FulfilmentTool-$VERSION.zip" "FulfilmentTool-$VERSION.zip.sha256"
+          "FulfilmentTool-DB-$VERSION.zip" "FulfilmentTool-DB-$VERSION.zip.sha256"
           --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA"
           --title "$VERSION" --generate-notes $RELEASE_KIND

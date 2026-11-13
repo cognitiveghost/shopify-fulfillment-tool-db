@@ -127,7 +127,7 @@ class ProfileManager:
         log_level_str = os.environ.get("FULFILLMENT_LOG_LEVEL", "INFO")
         log_level = getattr(logging, log_level_str.upper(), logging.INFO)
         setup_logging(
-            "ShopifyTool", str(self.base_path), level=log_level, retention_days=30
+            "ShopifyTool-DB", str(self.base_path), level=log_level, retention_days=30
         )
 
         # Log which environment we're using
@@ -198,7 +198,7 @@ class ProfileManager:
             Base path string
         """
         path = resolve_server_path(
-            "ShopifyTool", "FULFILLMENT_SERVER_PATH", PROD_SERVER_PATH
+            "ShopifyTool-DB", "FULFILLMENT_SERVER_PATH", PROD_SERVER_PATH
         )
         logger.info(f"Using server path: {path}")
         return path
