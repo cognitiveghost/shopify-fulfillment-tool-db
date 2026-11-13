@@ -18,6 +18,7 @@ import pytest
 
 from gui.actions_handler import ActionsHandler
 from gui.selection_helper import SelectionHelper
+from shared.store import FileStore
 from shopify_tool.analysis import (
     recalculate_statistics,
     run_analysis,
@@ -206,6 +207,7 @@ def test_undo_history_survives_reopen_for_lot_tracked_stock(tmp_path):
     assert df["Lot_Details"].iloc[0]  # lot tracking is on
     mw = window(df)
     mw.session_path = str(tmp_path)
+    mw.profile_manager = SimpleNamespace(store=FileStore(tmp_path))
     mw.undo_manager = UndoManager(mw)
     mw.undo_manager.record_operation("remove_order", "x", {"order_number": "#1"}, df.copy())
     assert len(UndoManager(mw).operations) == 1  # a reopened session still has it

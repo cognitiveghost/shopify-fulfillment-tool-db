@@ -6,10 +6,7 @@ shopify_tool/core.py:TODO-migrate(4c) analysis_stats.json / analysis_data under 
 shopify_tool/report_jobs.py:TODO-migrate(4c) packing list json
 shopify_tool/stock_export.py:TODO-migrate(4c) stock export under base_path
 gui/main_window_pyside.py:TODO-migrate(4c) analysis_stats.json mirror in session folder (closest area; not in a brief list)
-gui/actions_handler.py:TODO-migrate(4b) manual additions file in the session (closest area; not in a brief list)
-shopify_tool/session_manager.py:TODO-migrate(4b) session folders, session_info.json, session_index.json
-shopify_tool/session_state.py:TODO-migrate(4b) session state file
-shopify_tool/undo_manager.py:TODO-migrate(4b) undo history file
+shopify_tool/session_manager.py:session_index.json: FileStore-only derived cache, replaced by Store.query_sessions in Task 8
 shopify_tool/fulfillment_history.py:TODO-migrate(4d) per-client history file
 shared/stats_manager.py:TODO-migrate(4d) Stats/global_stats.json
 shared/logger.py:local log files written by setup_logging, not Store data

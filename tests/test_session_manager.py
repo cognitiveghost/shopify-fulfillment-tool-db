@@ -16,7 +16,7 @@ from shopify_tool.session_manager import SessionManager, SessionManagerError
 @pytest.fixture
 def session_manager(profile_manager):
     profile_manager.create_client_profile("M", "Test Client")
-    return SessionManager(profile_manager)
+    return SessionManager(profile_manager, profile_manager.store)
 
 
 class TestSessionCreation:
@@ -729,3 +729,13 @@ def test_a_listing_survives_an_index_lock_it_cannot_take(session_manager, monkey
     (first.parent / session_manager.INDEX_FILENAME).unlink()
     names = {s["session_name"] for s in session_manager.list_client_sessions("M")}
     assert names == {first.name, second.name}
+
+
+def test_editing_a_deleted_session_does_not_recreate_its_folder(session_manager, tmp_path):
+    path = session_manager.create_session("M")
+    session_manager.delete_session(path)
+
+    with pytest.raises(SessionManagerError):
+        session_manager.update_session_info(path, {"comments": "late"})
+    assert session_manager.apply_status_updates("M", {Path(path).name: "archived"}) == 0
+    assert not Path(path).exists()

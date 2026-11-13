@@ -107,7 +107,7 @@ def build(dest: Path) -> None:
         raise ValueError(f"{dest} is not empty; give a new folder")
 
     pm = ProfileManager(base_path=str(dest))
-    sm = SessionManager(pm)
+    sm = SessionManager(pm, pm.store)
     for client_id, (client_name, count) in CLIENTS.items():
         pm.create_client_profile(client_id, client_name)
         config = _latest_config(client_id)

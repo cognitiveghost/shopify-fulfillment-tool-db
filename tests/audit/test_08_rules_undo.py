@@ -23,6 +23,7 @@ from audit_support import (  # noqa: F401  pytest fixtures, used by name
 
 from gui.actions_handler import ActionsHandler
 from gui.selection_helper import SelectionHelper
+from shared.store import FileStore
 from shopify_tool.analysis import run_analysis
 from shopify_tool.rules import RuleEngine
 from shopify_tool.undo_manager import UndoManager
@@ -42,6 +43,7 @@ def _window(df, session_path=None):
         session_path=session_path,
         current_client_id="AUDIT",
         active_profile_config={"settings": {}},
+        profile_manager=SimpleNamespace(store=FileStore(session_path or ".")),
     )
     mw.selection_helper = SelectionHelper(main_window=mw)
     mw.undo_manager = UndoManager(mw)
@@ -95,7 +97,7 @@ def test_a_rerun_empties_the_saved_undo_history(tmp_path):
     """Reopening the session must not bring the old run's operations back."""
     mw = _order_removed_then_rerun(tmp_path)
 
-    history_file = mw.undo_manager._get_history_path()
+    history_file = mw.profile_manager.store.local_path(mw.undo_manager._get_history_path())
     assert json.loads(history_file.read_text(encoding="utf-8"))["operations"] == []
     assert mw.undo_manager.can_undo() is False
     mw.results_bridge.set_undo_available.assert_called_with(False)
@@ -181,7 +183,7 @@ def test_AUDIT_08_U2_one_bulk_status_change_keeps_the_history_small(benchmark_fr
 
     ActionsHandler(mw).bulk_change_status(df["Order_Number"].unique().tolist(), False)
 
-    history = mw.undo_manager._get_history_path()
+    history = mw.profile_manager.store.local_path(mw.undo_manager._get_history_path())
     assert (mw.analysis_results_df["Order_Fulfillment_Status"] == "Not Fulfillable").all()
     assert mw.undo_manager.can_undo()
     assert history.stat().st_size < 2_000_000

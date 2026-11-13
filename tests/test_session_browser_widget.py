@@ -401,7 +401,7 @@ def real(qtbot, monkeypatch, profile_manager, told):
     """A shown widget over a real SessionManager with two sessions on disk."""
     monkeypatch.setattr(SessionBrowserWidget, "USE_ASYNC", False)
     profile_manager.create_client_profile("M", "Test Client")
-    manager = SessionManager(profile_manager)
+    manager = SessionManager(profile_manager, profile_manager.store)
     paths = [manager.create_session("M") for _ in range(2)]
     manager.update_session_info(paths[0], {"comments": "first"})
     widget = SessionBrowserWidget(manager)
@@ -482,7 +482,8 @@ def test_a_session_that_left_the_share_is_reported_and_the_rest_are_written(real
 def other_pc(real):
     """A second SessionManager on the same share: another PC."""
     widget, _paths = real
-    return SessionManager(widget.session_manager.profile_manager)
+    profiles = widget.session_manager.profile_manager
+    return SessionManager(profiles, profiles.store)
 
 
 def test_undoing_an_archive_keeps_a_comment_another_pc_wrote_since_the_load(real, other_pc):

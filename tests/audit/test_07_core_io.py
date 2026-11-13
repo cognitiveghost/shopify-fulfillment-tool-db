@@ -198,7 +198,7 @@ def test_a_run_writes_no_excel_mirror(sessions, analysis_run):
 def _client_with_sessions(sessions, n=3):
     for _ in range(n):
         sessions.create_session("A")
-    return sessions.sessions_root / "CLIENT_A"
+    return sessions.store.local_path("Sessions/CLIENT_A")
 
 
 def _count_calls(monkeypatch, obj, name):
@@ -352,9 +352,11 @@ def _write_json(tmp_path):
 
 
 def _write_state(tmp_path):
+    store = FileStore(tmp_path)
+    session = tmp_path / "S1"
     df = pd.DataFrame({"Order_Number": ["#1"]})
-    session_state.save_state(tmp_path, df, session_state.state_stamp(tmp_path))
-    return pd.read_pickle(tmp_path / "analysis" / "current_state.pkl").equals(df)
+    session_state.save_state(store, session, df, session_state.state_stamp(store, session))
+    return pd.read_pickle(session / "analysis" / "current_state.pkl").equals(df)
 
 
 def _write_history(tmp_path):

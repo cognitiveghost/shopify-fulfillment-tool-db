@@ -13,8 +13,8 @@ from gui.components.commandbar import BarState
 from gui.selection_helper import order_number_mask
 from gui.settings import SettingsWindow
 from gui.worker import Worker
-from shared.atomic_write import atomic_write_json
 from shared.i18n import _, _n
+from shared.store import StoreNotFound
 from shopify_tool import (
     core,
     report_jobs,
@@ -304,7 +304,9 @@ class ActionsHandler(QObject):
             # the first edit after every analysis is refused as stale.
             if self.mw.session_path:
                 try:
-                    self.mw._state_stamp = session_state.state_stamp(self.mw.session_path)
+                    self.mw._state_stamp = session_state.state_stamp(
+                        self.mw.profile_manager.store, self.mw.session_path
+                    )
                 except OSError:
                     # No stamp makes the next save refuse: the safe direction.
                     self.log.exception("Could not stamp the session state")
@@ -556,7 +558,9 @@ class ActionsHandler(QObject):
         a check that can't reach the server refuses too.
         """
         try:
-            stale = session_state.is_stale(self.mw.session_path, self.mw._state_stamp)
+            stale = session_state.is_stale(
+                self.mw.profile_manager.store, self.mw.session_path, self.mw._state_stamp
+            )
         except OSError:
             self.log.exception("Could not check the session state before exporting")
             show_error(
@@ -1445,24 +1449,21 @@ class ActionsHandler(QObject):
 
     def _save_manual_addition(self, product_data):
         """Save manual addition to session file."""
-        import json
-
         if not hasattr(self.mw, "session_path") or not self.mw.session_path:
             self.log.warning("No active session, manual addition not saved")
             return
 
-        # Path to manual_additions.json
-        additions_file = os.path.join(self.mw.session_path, "manual_additions.json")
+        store = self.mw.profile_manager.store
+        # Store path of manual_additions.json
+        additions_file = f"{session_state.session_rel(store, self.mw.session_path)}/manual_additions.json"
 
         # Load existing additions
-        if os.path.exists(additions_file):
-            try:
-                with open(additions_file, "r", encoding="utf-8") as f:
-                    additions = json.load(f)
-            except Exception:
-                self.log.exception("Failed to load manual additions")
-                additions = []
-        else:
+        try:
+            additions = store.read_json(additions_file)
+        except StoreNotFound:
+            additions = []
+        except Exception:
+            self.log.exception("Failed to load manual additions")
             additions = []
 
         # Add new entry
@@ -1478,7 +1479,7 @@ class ActionsHandler(QObject):
 
         # Save back
         try:
-            atomic_write_json(additions_file, additions, indent=2)
+            store.write_json(additions_file, additions)
             self.log.info(f"Saved manual addition to {additions_file}")
         except Exception:
             self.log.exception("Failed to save manual additions")

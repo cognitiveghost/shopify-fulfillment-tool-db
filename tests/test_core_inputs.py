@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from shared.store import FileStore
 from shopify_tool import core
 from shopify_tool.session_manager import SessionManager
 
@@ -24,6 +25,7 @@ class Profiles:
 
     def __init__(self, root):
         self.root = Path(root)
+        self.store = FileStore(self.root)
 
     def get_sessions_root(self):
         return self.root / "Sessions"
@@ -126,7 +128,7 @@ def test_memory_mode_stock_skips_the_csv_name_check():
 
 def test_a_session_run_creates_a_session_and_copies_its_inputs(files, tmp_path):
     stock, orders = files
-    sessions = SessionManager(Profiles(tmp_path))
+    sessions = SessionManager(Profiles(tmp_path), FileStore(tmp_path))
     ok, _, _, _ = _run(stock, orders, tmp_path / "out", client_id="M", session_manager=sessions,
                        profile_manager=sessions.profile_manager)
     assert ok
@@ -139,7 +141,7 @@ def test_a_session_run_creates_a_session_and_copies_its_inputs(files, tmp_path):
 
 def test_a_given_session_path_is_reused(files, tmp_path):
     stock, orders = files
-    sessions = SessionManager(Profiles(tmp_path))
+    sessions = SessionManager(Profiles(tmp_path), FileStore(tmp_path))
     session = sessions.create_session("M")
     ok, _, _, _ = _run(stock, orders, tmp_path / "out", client_id="M", session_manager=sessions,
                        profile_manager=sessions.profile_manager, session_path=str(session))
@@ -150,7 +152,7 @@ def test_a_given_session_path_is_reused(files, tmp_path):
 
 def test_a_failed_state_save_still_writes_the_packing_data(files, tmp_path, monkeypatch, caplog):
     stock, orders = files
-    sessions = SessionManager(Profiles(tmp_path))
+    sessions = SessionManager(Profiles(tmp_path), FileStore(tmp_path))
     session = sessions.create_session("M")
 
     def locked(self, *a, **k):

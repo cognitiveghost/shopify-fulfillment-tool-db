@@ -48,27 +48,29 @@ def _orders(*statuses):
 
 def _open_with_state(win, df):
     path = win.session_manager.create_session("acme")
-    session_state.save_state(path, df, None)
+    session_state.save_state(win.profile_manager.store, path, df, None)
     win.load_existing_session(path)
     return path
 
 
-def _another_pc_saves(path, df):
-    session_state.save_state(path, df, session_state.state_stamp(path))
+def _another_pc_saves(win, path, df):
+    store = win.profile_manager.store
+    session_state.save_state(store, path, df, session_state.state_stamp(store, path))
 
 
 def test_an_edit_after_analysis_saves(main_window, told):
     path = main_window.session_manager.create_session("acme")
     main_window.session_path = path
     df = _orders("Fulfillable", "Fulfillable")
-    session_state.save_state(path, df, None)  # what core.run_full_analysis writes
+    store = main_window.profile_manager.store
+    session_state.save_state(store, path, df, None)  # what core.run_full_analysis writes
     main_window.actions_handler.on_analysis_complete((True, "report.xlsx", df, {}))
 
     main_window.analysis_results_df.loc[0, "Order_Fulfillment_Status"] = "Not Fulfillable"
     main_window.save_session_state()
 
     assert told == []
-    assert main_window._state_stamp == session_state.state_stamp(path)
+    assert main_window._state_stamp == session_state.state_stamp(store, path)
 
 
 def test_two_edits_in_a_row_both_save(main_window, told):
@@ -83,7 +85,7 @@ def test_two_edits_in_a_row_both_save(main_window, told):
 
 def test_a_save_after_another_pc_saved_is_refused(main_window, told):
     path = _open_with_state(main_window, _orders("Fulfillable", "Fulfillable"))
-    _another_pc_saves(path, _orders("Not Fulfillable", "Fulfillable"))
+    _another_pc_saves(main_window, path, _orders("Not Fulfillable", "Fulfillable"))
 
     main_window.analysis_results_df.loc[1, "Order_Fulfillment_Status"] = "Not Fulfillable"
     main_window.save_session_state()
@@ -93,7 +95,7 @@ def test_a_save_after_another_pc_saved_is_refused(main_window, told):
 
 def test_generate_reports_is_refused_when_stale(main_window, told, monkeypatch):
     path = _open_with_state(main_window, _orders("Fulfillable", "Fulfillable"))
-    _another_pc_saves(path, _orders("Not Fulfillable", "Fulfillable"))
+    _another_pc_saves(main_window, path, _orders("Not Fulfillable", "Fulfillable"))
     loaded = []
     # Stands in for everything after the check; returning None also stops a
     # regression from opening the modal dialog and hanging the test.
@@ -109,7 +111,7 @@ def test_generate_reports_is_refused_when_stale(main_window, told, monkeypatch):
 
 def test_export_selection_is_refused_when_stale(main_window, told, monkeypatch):
     path = _open_with_state(main_window, _orders("Fulfillable", "Fulfillable"))
-    _another_pc_saves(path, _orders("Not Fulfillable", "Fulfillable"))
+    _another_pc_saves(main_window, path, _orders("Not Fulfillable", "Fulfillable"))
     asked = []
     monkeypatch.setattr(
         actions_module.QFileDialog,
@@ -126,7 +128,7 @@ def test_export_selection_is_refused_when_stale(main_window, told, monkeypatch):
 def test_an_export_that_cannot_check_is_refused(main_window, told, monkeypatch):
     _open_with_state(main_window, _orders("Fulfillable"))
 
-    def unreachable(_path):
+    def unreachable(_store, _path):
         raise OSError("The network path was not found")
 
     monkeypatch.setattr(actions_module.session_state, "state_stamp", unreachable)
@@ -175,7 +177,7 @@ def test_a_hold_made_while_the_save_dialog_is_open_is_refused(
     out = tmp_path / "selection.csv"
 
     def operator_is_choosing_a_file(*_a, **_k):
-        _another_pc_saves(path, _orders("Not Fulfillable", "Fulfillable"))
+        _another_pc_saves(main_window, path, _orders("Not Fulfillable", "Fulfillable"))
         return str(out), ""
 
     monkeypatch.setattr(
@@ -192,7 +194,7 @@ def test_a_hold_made_while_the_reports_dialog_is_open_is_refused(
     main_window, told, monkeypatch
 ):
     path = _open_with_state(main_window, _orders("Fulfillable", "Fulfillable"))
-    _another_pc_saves(path, _orders("Not Fulfillable", "Fulfillable"))
+    _another_pc_saves(main_window, path, _orders("Not Fulfillable", "Fulfillable"))
     generated = []
     monkeypatch.setattr(
         main_window.actions_handler,

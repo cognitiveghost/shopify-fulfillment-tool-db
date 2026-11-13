@@ -6,12 +6,10 @@ Each PC keeps the stamp it last loaded or saved; a save against a different
 file on disk is refused. ADR 0011.
 """
 
-import os
-import tempfile
+import io
 from pathlib import Path
 
-from shared.atomic_write import replace_with_retry
-from shared.file_lock import locked_file
+from shared.store import Store, StoreConflict, StoreNotFound
 from shopify_tool import stock_ledger
 
 STATE_FILE = "current_state.pkl"
@@ -21,48 +19,48 @@ class StaleSessionError(Exception):
     """Another PC saved this session's state after this PC loaded it."""
 
 
-def _state_path(session_path) -> Path:
-    return Path(session_path) / "analysis" / STATE_FILE
+def session_rel(store: Store, session_path) -> str:
+    """Store path (POSIX, relative to the server root) of a session folder.
+
+    Callers hand in the absolute folder path the GUI holds. A folder that is
+    the root itself gives "." (which the Store accepts as a path prefix).
+    """
+    return Path(session_path).relative_to(store.local_path("")).as_posix()
 
 
-def state_stamp(session_path):
-    """(mtime_ns, size) of the saved state, or None when there is none yet.
+def _state_rel(store: Store, session_path) -> str:
+    return f"{session_rel(store, session_path)}/analysis/{STATE_FILE}"
+
+
+def state_stamp(store: Store, session_path):
+    """Change token of the saved state, or None when there is none yet.
 
     ponytail: two same-size saves inside one file-time tick share a stamp;
     upgrade to a version token written with the state if that ever shows up.
     """
     try:
-        st = _state_path(session_path).stat()
-    except FileNotFoundError:
+        return store.stamp(_state_rel(store, session_path))
+    except StoreNotFound:
         return None
-    return (st.st_mtime_ns, st.st_size)
 
 
-def is_stale(session_path, loaded_stamp) -> bool:
-    return state_stamp(session_path) != loaded_stamp
+def is_stale(store: Store, session_path, loaded_stamp) -> bool:
+    return state_stamp(store, session_path) != loaded_stamp
 
 
-def save_state(session_path, df, loaded_stamp):
+def save_state(store: Store, session_path, df, loaded_stamp):
     """Write df as the session's state, atomically; return the new stamp.
 
     Raises StaleSessionError, writing nothing, when the state on disk is not
-    the one this PC loaded or last saved. The lock spans only the check and
-    the replace, so two PCs can't both pass the check and both write.
+    the one this PC loaded or last saved. The Store checks the stamp and
+    writes under one lock, so two PCs can't both pass the check and both write.
     """
-    path = _state_path(session_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path.with_name(STATE_FILE + ".lock"), "a+") as lock, locked_file(lock):
-        if is_stale(session_path, loaded_stamp):
-            raise StaleSessionError(str(path))
-        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".current_state_tmp_", suffix=".pkl")
-        os.close(fd)
-        try:
-            df.to_pickle(tmp)
-            replace_with_retry(tmp, path)
-        except BaseException:
-            Path(tmp).unlink(missing_ok=True)
-            raise
-        return state_stamp(session_path)
+    buf = io.BytesIO()
+    df.to_pickle(buf)
+    try:
+        return store.write_bytes_if(_state_rel(store, session_path), buf.getvalue(), loaded_stamp)
+    except StoreConflict as e:
+        raise StaleSessionError(str(e)) from e
 
 
 def order_counts(df) -> dict:

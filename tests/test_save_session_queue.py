@@ -23,11 +23,11 @@ def test_an_edit_writes_only_the_pickle_before_returning(main_window, monkeypatc
     monkeypatch.setattr(fulfillment_history, "record_session", lambda *a, **k: calls.append("history") or True)
     monkeypatch.setattr(main_window.session_manager, "update_session_info",
                         lambda *a, **k: calls.append("info") or True)
-    before = session_state.state_stamp(path)
+    before = session_state.state_stamp(main_window.profile_manager.store, path)
     gate = gated(main_window.write_queue)
     try:
         main_window.actions_handler.bulk_change_status(["#1002"], False)
-        assert session_state.state_stamp(path) != before  # the pickle is written
+        assert session_state.state_stamp(main_window.profile_manager.store, path) != before  # the pickle is written
         assert calls == []  # nothing else yet
     finally:
         gate.set()

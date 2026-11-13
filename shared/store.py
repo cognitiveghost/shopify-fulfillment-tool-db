@@ -68,6 +68,13 @@ class Store:
     def write_bytes(self, rel: str, data: bytes) -> None:
         raise NotImplementedError
 
+    def write_bytes_if(self, rel: str, data: bytes, expected: object) -> object:
+        """Write `data` only if stamp(rel) == expected (None: must not exist); return the new stamp.
+
+        Raises StoreConflict, writing nothing, on a mismatch.
+        """
+        raise NotImplementedError
+
     def exists(self, rel: str) -> bool:
         raise NotImplementedError
 
@@ -200,10 +207,29 @@ class FileStore(Store):
 
     def stamp(self, rel):
         try:
-            return self._p(rel).stat().st_mtime_ns
+            st = self._p(rel).stat()
         except FileNotFoundError:
             raise StoreNotFound(rel) from None
         except OSError as e:
+            raise StoreError(rel) from e
+        return (st.st_mtime_ns, st.st_size)
+
+    def write_bytes_if(self, rel, data, expected):
+        path = self._p(rel)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Same sidecar as update_json, so the two lock each other.
+        side = path.with_name(path.name + ".lock")
+        try:
+            with open(side, "a+b") as fh, locked_file(fh):
+                try:
+                    current = self.stamp(rel)
+                except StoreNotFound:
+                    current = None
+                if current != expected:
+                    raise StoreConflict(rel)
+                self.write_bytes(rel, data)
+                return self.stamp(rel)
+        except (OSError, FileLockError) as e:
             raise StoreError(rel) from e
 
     # --- list locks (.session.lock, same JSON as the Packer's SessionLockManager) ---

@@ -273,7 +273,7 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            self.session_manager = SessionManager(self.profile_manager)
+            self.session_manager = SessionManager(self.profile_manager, self.profile_manager.store)
 
             # Initialize GroupsManager
             self.groups_manager = GroupsManager(self.profile_manager.store)
@@ -970,6 +970,7 @@ class MainWindow(QMainWindow):
 
         try:
             self._state_stamp = session_state.save_state(
+                self.profile_manager.store,
                 self.session_path,
                 self.analysis_results_df,
                 getattr(self, "_state_stamp", None),
@@ -1115,7 +1116,7 @@ class MainWindow(QMainWindow):
 
             # Before the read: a write landing between the two makes the next
             # save refuse needlessly, never overwrite (ADR 0011).
-            self._state_stamp = session_state.state_stamp(session_path)
+            self._state_stamp = session_state.state_stamp(self.profile_manager.store, session_path)
 
             # Priority 1: Try loading from current_state.pkl
             pkl_path = analysis_dir / "current_state.pkl"

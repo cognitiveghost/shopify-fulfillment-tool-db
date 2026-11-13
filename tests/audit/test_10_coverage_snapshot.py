@@ -228,7 +228,7 @@ def test_opening_a_session_loads_its_recorded_fingerprints(main_window):
     )
     from shopify_tool import session_state
 
-    session_state.save_state(path, LISTED, None)
+    session_state.save_state(main_window.profile_manager.store, path, LISTED, None)
     main_window.load_existing_session(path)
     assert main_window._list_fingerprints == {"ALL": "ab"}
 

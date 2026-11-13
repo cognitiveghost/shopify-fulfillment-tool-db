@@ -4,7 +4,7 @@ from datetime import UTC, timedelta
 import pytest
 
 from shared import store as store_mod
-from shared.store import FileStore, StoreError, StoreNotFound
+from shared.store import FileStore, StoreConflict, StoreError, StoreNotFound
 
 LIST = "Sessions/CLIENT_X/s1/packing/list1"
 
@@ -129,6 +129,8 @@ def test_base_store_methods_not_implemented():
         s.read_json("a")
     with pytest.raises(NotImplementedError):
         s.acquire_list_lock("a", "pc", "u")
+    with pytest.raises(NotImplementedError):
+        s.write_bytes_if("a", b"", None)
 
 
 def test_lock_file_compat_with_packer_format(store, tmp_path):
@@ -206,3 +208,27 @@ def test_stamp_changes_on_rewrite_and_missing_raises(store):
     time.sleep(0.05)  # coarse filesystem timestamps
     store.write_json("s.json", {"v": 2, "more": "content"})
     assert store.stamp("s.json") != first
+
+
+def test_write_bytes_if_none_writes_only_when_absent(store):
+    stamp = store.write_bytes_if("st/state.pkl", b"one", None)
+    assert store.read_bytes("st/state.pkl") == b"one"
+    assert stamp == store.stamp("st/state.pkl")
+    with pytest.raises(StoreConflict):
+        store.write_bytes_if("st/state.pkl", b"two", None)
+    assert store.read_bytes("st/state.pkl") == b"one"
+
+
+def test_write_bytes_if_wrong_stamp_conflicts_and_writes_nothing(store):
+    store.write_bytes("w.bin", b"kept")
+    with pytest.raises(StoreConflict):
+        store.write_bytes_if("w.bin", b"lost", ("not", "the", "stamp"))
+    assert store.read_bytes("w.bin") == b"kept"
+
+
+def test_write_bytes_if_right_stamp_writes_and_returns_new_stamp(store):
+    store.write_bytes("r.bin", b"a")
+    held = store.stamp("r.bin")
+    new = store.write_bytes_if("r.bin", b"bbb", held)
+    assert store.read_bytes("r.bin") == b"bbb"
+    assert new != held and new == store.stamp("r.bin")
