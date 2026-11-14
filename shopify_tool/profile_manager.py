@@ -26,7 +26,7 @@ from typing import Any, ClassVar
 
 from shared.logger import setup_logging
 from shared.server_connection import resolve_server_path, test_path_reachable
-from shared.store import FileStore, StoreError, StoreNotFound
+from shared.store import FileStore, Store, StoreError, StoreNotFound
 from shopify_tool.profile_migrations import (
     migrate_add_inventory_memory,
     migrate_add_tag_categories,
@@ -93,7 +93,12 @@ class ProfileManager:
     # Class-level constants for metadata cache
     METADATA_CACHE_TIMEOUT_SECONDS = 300  # 5 minutes
 
-    def __init__(self, base_path: str | None = None, require_connection: bool = True):
+    def __init__(
+        self,
+        base_path: str | None = None,
+        require_connection: bool = True,
+        store: Store | None = None,
+    ):
         """Initialize ProfileManager with automatic environment detection.
 
         Args:
@@ -107,15 +112,19 @@ class ProfileManager:
                        raising. Every path this object publishes is still a
                        real Path -- the caller's disabled controls are the
                        guard, not a None check here.
+            store: A Store already opened by the caller (startup chose it).
+                       Used as is: no path resolution, no reachability probe.
 
         Raises:
             NetworkError: If file server is not accessible and require_connection is True
         """
-        # Auto-detect base path if not provided
-        if base_path is None:
-            base_path = self._get_base_path()
-
-        self._bind_base_path(base_path)
+        if store is not None:
+            self._bind_store(store)
+        else:
+            # Auto-detect base path if not provided
+            if base_path is None:
+                base_path = self._get_base_path()
+            self._bind_base_path(base_path)
 
         # Per-process log file on the same server base_path resolved to -
         # previously this never happened at all: shopify_tool/__init__.py
@@ -138,6 +147,13 @@ class ProfileManager:
         self._metadata_cache: dict[str, tuple[dict, datetime]] = {}
 
         self.connection_timeout = 5
+        if store is not None:
+            self._store_injected = True
+            self.is_network_available = True
+            logger.info(f"ProfileManager initialized with injected store: {self.base_path}")
+            return
+
+        self._store_injected = False
         self.is_network_available = self._test_connection()
 
         if not self.is_network_available:
@@ -159,18 +175,22 @@ class ProfileManager:
         logger.info(f"ProfileManager initialized with base path: {self.base_path}")
 
     def _bind_base_path(self, base_path: str) -> None:
-        """Point this object at a server root, with everything derived from it.
+        """Point this object at a server root, with everything derived from it."""
+        self._bind_store(FileStore(base_path))
 
-        Every directory below is a pure function of base_path, so they are
+    def _bind_store(self, store: Store) -> None:
+        """Point this object at a store, with everything derived from it.
+
+        Every directory below is a pure function of the store, so they are
         rebuilt in one place -- a base_path that moves without them is an
         object half-pointed at two servers.
         """
-        self.store = FileStore(base_path)
-        self.base_path = self.store.root  # FileStore root; display only
-        self.clients_dir = self.store.local_path("Clients")
-        self.sessions_dir = self.store.local_path("Sessions")
-        self.stats_dir = self.store.local_path("Stats")
-        self.logs_dir = self.store.local_path("Logs/shopify_tool")
+        self.store = store
+        self.base_path = store.local_path("")  # display only
+        self.clients_dir = store.local_path("Clients")
+        self.sessions_dir = store.local_path("Sessions")
+        self.stats_dir = store.local_path("Stats")
+        self.logs_dir = store.local_path("Logs/shopify_tool")
 
     def recheck_connection(self) -> bool:
         """Re-resolve the server path and re-test it. Returns reachability.
@@ -179,8 +199,11 @@ class ProfileManager:
         writes a new one, and a shell that opened degraded has to recover in
         the same session rather than asking for a restart. Re-testing the
         base_path captured at construction would only ever re-confirm the
-        failure, so this re-runs the whole resolution chain.
+        failure, so this re-runs the whole resolution chain. An injected
+        store is not re-resolved: the caller chose it at startup.
         """
+        if self._store_injected:
+            return True
         self._bind_base_path(self._get_base_path())
         self.is_network_available = self._test_connection()
         return self.is_network_available

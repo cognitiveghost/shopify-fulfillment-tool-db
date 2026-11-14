@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from shared.store import FileStore
 from shopify_tool.profile_manager import ProfileManager, ProfileManagerError
 
 
@@ -135,6 +136,28 @@ class TestInventoryMemoryRoundTrip:
         profile_manager.save_inventory_memory("M", {})
         mem = profile_manager.get_inventory_memory("M")
         assert mem["skus"] == {"A1": 5.0, "B1": 3.0}
+
+
+class TestInjectedStore:
+    def test_injected_store_is_used_and_no_server_is_probed(self, tmp_path):
+        store = FileStore(tmp_path / "server")
+        pm = ProfileManager(store=store, require_connection=False)
+        assert pm.store is store
+        assert pm.is_network_available is True
+        assert pm.clients_dir == tmp_path / "server" / "Clients"
+
+        pm.create_client_profile("M", "Client")
+        assert pm.load_shopify_config("M")["client_id"] == "M"
+
+    def test_recheck_keeps_the_injected_store(self, tmp_path, monkeypatch):
+        store = FileStore(tmp_path / "server")
+        pm = ProfileManager(store=store)
+        monkeypatch.setattr(
+            ProfileManager, "_get_base_path", lambda self: str(tmp_path / "elsewhere")
+        )
+        assert pm.recheck_connection() is True
+        assert pm.store is store
+        assert pm.clients_dir == tmp_path / "server" / "Clients"
 
 
 class TestListClientsBug:
