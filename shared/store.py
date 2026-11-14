@@ -112,7 +112,11 @@ class Store:
         raise NotImplementedError
 
     def lock_info(self, list_dir: str) -> LockInfo | None:
-        """The list's current lock without taking it; None when free. StoreError if unreadable."""
+        """The list's current lock without taking it (acquired=True means held); None when free.
+
+        FileStore reads an unreadable lock file as held, aged by mtime, holder unknown;
+        SupabaseStore raises StoreError when the lock table cannot be read.
+        """
         raise NotImplementedError
 
     def local_path(self, rel: str) -> Path:
@@ -191,10 +195,18 @@ class FileStore(Store):
         side = path.with_name(path.name + ".lock")
         try:
             with open(side, "a+b") as fh, locked_file(fh):
-                try:
-                    current = self.read_json(rel)
-                except StoreNotFound:
-                    current = None
+                # A transient SMB sharing violation must not fail the update (AUDIT-02-5).
+                for attempt in range(LOCK_READ_ATTEMPTS):
+                    try:
+                        current = self.read_json(rel)
+                        break
+                    except StoreNotFound:
+                        current = None
+                        break
+                    except StoreError:
+                        if attempt == LOCK_READ_ATTEMPTS - 1:
+                            raise
+                        time.sleep(LOCK_READ_RETRY_SECONDS)
                 new = fn(current)
                 atomic_write_json(path, new)
                 return new

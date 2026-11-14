@@ -196,6 +196,26 @@ def test_corrupt_json_raises_store_error(store):
     assert not isinstance(e.value, StoreNotFound)
 
 
+def test_update_json_retries_a_failed_read(tmp_path, monkeypatch):
+    # A sharing violation on the share must not drop the update (AUDIT-02-5).
+    store = FileStore(tmp_path)
+    store.write_json(S + "r.json", {"n": 1})
+    monkeypatch.setattr(store_mod, "LOCK_READ_RETRY_SECONDS", 0)
+    real_read, failed = store.read_json, []
+
+    def flaky_read(rel):
+        if not failed:
+            failed.append(True)
+            raise StoreError(rel)
+        return real_read(rel)
+
+    monkeypatch.setattr(store, "read_json", flaky_read)
+    assert store.update_json(S + "r.json", lambda d: {"n": d["n"] + 1}) == {"n": 2}
+    monkeypatch.setattr(store, "read_json", lambda rel: (_ for _ in ()).throw(StoreError(rel)))
+    with pytest.raises(StoreError):
+        store.update_json(S + "r.json", lambda d: d)
+
+
 def test_update_json_sidecar_lock_hidden_from_list_dir(store):
     store.update_json(S + "d/c.json", lambda d: {"n": 1})
     assert store.list_dir(S + "d") == ["c.json"]
