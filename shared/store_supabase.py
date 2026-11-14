@@ -91,6 +91,8 @@ def _parse_ts(v: str | None) -> datetime | None:
 
 
 class SupabaseStore(Store):
+    derived_indexes = True
+
     def __init__(self, client, *, pc: str, cache_dir: Path):
         self.client = client
         self.pc = pc
@@ -627,6 +629,17 @@ class SupabaseStore(Store):
 
     def _rpc(self, name: str, params: dict):
         return self.client.rpc(name, params).execute().data
+
+    @_guard
+    def lock_info(self, list_dir):
+        k = self._lock_key(list_dir)
+        rows = (self._t("list_locks").select("holder_pc,holder_user,heartbeat_at")
+                .match({"client_id": k["p_client"], "session_name": k["p_session"], "list_name": k["p_list"]})
+                .execute().data)
+        if not rows:
+            return None
+        r = rows[0]
+        return LockInfo(True, r["holder_pc"], r["holder_user"], _parse_ts(r["heartbeat_at"]))
 
     @_guard
     def acquire_list_lock(self, list_dir, pc, user):

@@ -59,6 +59,9 @@ class LockInfo:
 class Store:
     """Base class; backends override every method."""
 
+    # True when session/registry indexes are queries on tables, not cache files (SupabaseStore).
+    derived_indexes = False
+
     def read_json(self, rel: str) -> Any:
         raise NotImplementedError
 
@@ -106,6 +109,10 @@ class Store:
         raise NotImplementedError
 
     def release_list_lock(self, list_dir: str, pc: str) -> None:
+        raise NotImplementedError
+
+    def lock_info(self, list_dir: str) -> LockInfo | None:
+        """The list's current lock without taking it; None when free. StoreError if unreadable."""
         raise NotImplementedError
 
     def local_path(self, rel: str) -> Path:
@@ -504,6 +511,12 @@ class FileStore(Store):
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(body, f, indent=2)
         return True
+
+    def lock_info(self, list_dir):
+        data = self._read_lock(self._lock_path(list_dir))
+        if data is None:
+            return None
+        return LockInfo(True, data.get("locked_by"), data.get("user_name"), self._heartbeat(data))
 
     def acquire_list_lock(self, list_dir, pc, user):
         lp = self._lock_path(list_dir)

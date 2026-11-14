@@ -260,3 +260,13 @@ def test_write_bytes_if_right_stamp_writes_and_returns_new_stamp(store):
     new = store.write_bytes_if(S + "r.bin", b"bbb", held)
     assert store.read_bytes(S + "r.bin") == b"bbb"
     assert new != held and new == store.stamp(S + "r.bin")
+
+
+def test_lock_info_reads_without_taking(store):
+    assert store.lock_info(LIST) is None
+    store.acquire_list_lock(LIST, "pc1", "ann")
+    info = store.lock_info(LIST)
+    assert (info.holder_pc, info.holder_user) == ("pc1", "ann") and info.heartbeat_at is not None
+    assert store.lock_info(LIST).holder_pc == "pc1"  # reading did not change the holder
+    store.release_list_lock(LIST, "pc1")
+    assert store.lock_info(LIST) is None
