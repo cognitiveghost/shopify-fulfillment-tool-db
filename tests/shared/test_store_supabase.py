@@ -123,3 +123,12 @@ def test_claim_dir_session_and_client(store):
     assert store.claim_dir("Sessions/CLIENT_N/2026_1") is True
     assert store.claim_dir("Sessions/CLIENT_N/2026_1") is False
     assert store.claim_dir("Sessions/CLIENT_N/2026_1/analysis") is True  # implicit subfolder
+
+
+def test_local_path_of_a_folder_makes_no_call(store, tmp_path, monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("network call")
+
+    monkeypatch.setattr(type(store), "_bucket", property(boom))  # any storage use would raise
+    assert store.local_path("Clients") == tmp_path / "Clients"
+    assert store.local_path("Sessions/CLIENT_X/s1") == tmp_path / "Sessions/CLIENT_X/s1"

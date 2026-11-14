@@ -577,8 +577,8 @@ class SupabaseStore(Store):
         if rel == "":
             return self.cache_dir
         path = self.cache_dir / rel
-        if route(rel).kind != "blob":
-            return path
+        if "." not in rel.rsplit("/", 1)[-1] or route(rel).kind != "blob":
+            return path  # a folder (Clients, Sessions/..): nothing to fetch, and no network call
         # ponytail: re-downloaded on every call, no freshness check; add an etag
         # compare when a caller needs to open the same large file repeatedly.
         try:
