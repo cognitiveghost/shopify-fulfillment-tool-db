@@ -2,9 +2,9 @@ import threading
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from conftest import make_user_client
 
 from shared.store_supabase import SupabaseStore
-from tests.shared.conftest import make_user_client
 
 pytestmark = pytest.mark.supabase
 
