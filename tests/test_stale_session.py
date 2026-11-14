@@ -8,6 +8,7 @@ import gui.actions_handler as actions_module
 import gui.main_window_pyside as main_window_module
 import gui.session_browser_widget as browser_module
 from gui.main_window_pyside import MainWindow
+from shared.store import StoreError
 from shopify_tool import session_state
 
 
@@ -129,7 +130,7 @@ def test_an_export_that_cannot_check_is_refused(main_window, told, monkeypatch):
     _open_with_state(main_window, _orders("Fulfillable"))
 
     def unreachable(_store, _path):
-        raise OSError("The network path was not found")
+        raise StoreError("The network path was not found")  # what Store.stamp raises
 
     monkeypatch.setattr(actions_module.session_state, "state_stamp", unreachable)
     monkeypatch.setattr(

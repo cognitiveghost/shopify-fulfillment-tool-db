@@ -347,7 +347,7 @@ def open_store(app_name: str, *, fallback_root: str, cache_dir: Path, prompt, ou
 
 - [ ] **Step 1:** Test (local stack): loader on `tests/replay/fixtures` → 26 sessions, 3 clients. Second run → still 26. `--fixtures /tmp/x` → exit 2 with "refusing". `check_no_real_data` passes after the load and fails after inserting `{"Customer": "Ivan Petrov"}`.
 - [ ] **Step 2:** Run. FAIL. Implement. PASS. Commit.
-- [ ] **Step 3: Remote** (human-confirmed actions, one at a time): apply the three migrations to `ntzqarcksthplcdzivep` with the Supabase MCP `apply_migration`. Run `get_advisors` (security) and fix anything above "info". Fetch the publishable key into `db_config.py`. Create three Auth users (owner does it in the dashboard: `pc-warehouse-1`, `pc-warehouse-2`, `pc-home`). Run the loader against remote with the owner's sign-in. Run `check_no_real_data.py`. Expected: 26 sessions remote, check exit 0.
+- [ ] **Step 3: Remote** (human-confirmed actions, one at a time): apply the three migrations to `ntzqarcksthplcdzivep` with the Supabase MCP `apply_migration`. Run `get_advisors` (security) and fix anything above "info". Fetch the publishable key into `db_config.py`. Turn off sign-ups (Auth → Providers → "Allow new users to sign up"): every policy admits any signed-in user. Create three Auth users (owner does it in the dashboard: `pc-warehouse-1`, `pc-warehouse-2`, `pc-home`). Run the loader against remote with the owner's sign-in. Run `check_no_real_data.py`. Expected: 26 sessions remote, check exit 0.
 
 ---
 

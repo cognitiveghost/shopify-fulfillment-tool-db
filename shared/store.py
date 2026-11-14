@@ -171,7 +171,14 @@ class FileStore(Store):
             raise
 
     def exists(self, rel):
-        return self._p(rel).exists()
+        # Not Path.exists(): it reads a dropped share or a denied folder as "absent".
+        try:
+            self._p(rel).stat()
+        except (FileNotFoundError, NotADirectoryError):
+            return False
+        except OSError as e:
+            raise StoreError(rel) from e
+        return True
 
     def list_dir(self, rel):
         try:
@@ -251,8 +258,10 @@ class FileStore(Store):
         if data is None:
             try:
                 hb = datetime.fromtimestamp(lock_path.stat().st_mtime).astimezone().isoformat()
-            except OSError:
+            except FileNotFoundError:
                 return None
+            except OSError:
+                hb = _now().isoformat()  # still held: an outage is not a free lock
             return {"locked_by": None, "user_name": None, "heartbeat": hb}
         if not isinstance(data, dict) or not all(
             k in data for k in ("locked_by", "user_name", "lock_time", "heartbeat")
@@ -292,16 +301,21 @@ class FileStore(Store):
 
     def acquire_list_lock(self, list_dir, pc, user):
         lp = self._lock_path(list_dir)
-        data = self._read_lock(lp)
-        if data is not None:
-            if self._mine(data, pc):
-                self.heartbeat_list_lock(list_dir, pc)
-                return LockInfo(True, pc, data.get("user_name"), self._heartbeat(data))
-            return LockInfo(False, data.get("locked_by"), data.get("user_name"), self._heartbeat(data))
         body = self._lock_body(pc, user)
-        lp.unlink(missing_ok=True)  # absent, or present but invalid
-        if self._create_lock(lp, body):
-            return LockInfo(True, pc, user, parse_timestamp(body["heartbeat"]))
+        # Create first: clearing an absent lock before creating could delete one
+        # another PC made in between, and both would hold the list.
+        for _ in range(2):
+            if self._create_lock(lp, body):
+                return LockInfo(True, pc, user, parse_timestamp(body["heartbeat"]))
+            data = self._read_lock(lp)
+            if data is not None:
+                if self._mine(data, pc):
+                    self.heartbeat_list_lock(list_dir, pc)
+                    return LockInfo(True, pc, data.get("user_name"), self._heartbeat(data))
+                return LockInfo(False, data.get("locked_by"), data.get("user_name"), self._heartbeat(data))
+            # ponytail: an invalid lock is cleared and retried once; two PCs clearing
+            # the same one at once could both hold. Rename it aside if that ever shows up.
+            lp.unlink(missing_ok=True)
         other = self._read_lock(lp) or {}
         return LockInfo(False, other.get("locked_by"), other.get("user_name"), self._heartbeat(other))
 

@@ -142,7 +142,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         """Initializes the MainWindow, sets up UI, and connects signals."""
         super().__init__()
-        self.setWindowTitle(" ".join((APP_NAME, __version__)) + _DB_TRIAL)
+        self.setWindowTitle(" ".join((APP_NAME, __version__ + _DB_TRIAL)))
 
         from PySide6.QtCore import QSettings
 

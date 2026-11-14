@@ -1359,7 +1359,7 @@ def _save_results_and_reports(
             # The run replaces the state whatever is on disk, a re-run included, so
             # it checks against the stamp it finds rather than one it loaded.
             session_state.save_state(
-                working_path, final_df, session_state.state_stamp(working_path)
+                store, working_path, final_df, session_state.state_stamp(store, working_path)
             )
             store.write_json(f"{analysis_rel}/analysis_stats.json", stats)
             logger.info("Initial session state files saved successfully")

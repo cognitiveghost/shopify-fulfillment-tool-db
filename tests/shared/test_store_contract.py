@@ -37,6 +37,18 @@ def test_bytes_roundtrip_exists_delete(store):
     assert not store.exists("d")
 
 
+def test_exists_raises_on_a_failed_look(store, monkeypatch):
+    if not isinstance(store, FileStore):
+        pytest.skip("FileStore failure injection")
+
+    def denied(self, *a, **k):
+        raise PermissionError("access denied")
+
+    monkeypatch.setattr(store_mod.Path, "stat", denied)
+    with pytest.raises(StoreError):  # never "absent"
+        store.exists("d/x.bin")
+
+
 def test_update_json_concurrent(store):
     def work():
         for _ in range(50):
@@ -97,7 +109,7 @@ def test_release_only_by_holder(store):
 def test_force_take_only_when_stale(store, monkeypatch):
     held = store.acquire_list_lock(LIST, "pc1", "ann")
     for age, taken in ((30, False), (121, True)):
-        monkeypatch.setattr(store_mod, "_now", lambda: held.heartbeat_at + timedelta(seconds=age))
+        monkeypatch.setattr(store_mod, "_now", lambda age=age: held.heartbeat_at + timedelta(seconds=age))
         cur = store.acquire_list_lock(LIST, "pc2", "bob")
         assert not cur.acquired  # acquire never takes over, even stale
         assert store.force_take_list_lock(LIST, "pc2", "bob", cur.heartbeat_at) is taken

@@ -291,10 +291,14 @@ def test_AUDIT_07_M2_the_run_writes_its_state_files_atomically(
     path = sessions.create_session("M")
     in_place = in_place_writes("current_state.pkl", "analysis_data.json", "analysis_stats.json")
 
-    ok, msg, _df, _stats = analysis_run(path)
+    ok, msg, _df, stats = analysis_run(path)
 
     assert ok, msg
     assert in_place == []
+    assert "state_warning" not in stats
+    analysis = Path(path) / "analysis"
+    assert (analysis / "current_state.pkl").is_file()
+    assert (analysis / "analysis_stats.json").is_file()
 
 
 # --------------------------------------------------------------------------

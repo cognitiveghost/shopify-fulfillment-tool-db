@@ -14,7 +14,7 @@ from gui.selection_helper import order_number_mask
 from gui.settings import SettingsWindow
 from gui.worker import Worker
 from shared.i18n import _, _n
-from shared.store import StoreNotFound
+from shared.store import StoreError, StoreNotFound
 from shopify_tool import (
     core,
     report_jobs,
@@ -307,7 +307,7 @@ class ActionsHandler(QObject):
                     self.mw._state_stamp = session_state.state_stamp(
                         self.mw.profile_manager.store, self.mw.session_path
                     )
-                except OSError:
+                except (OSError, StoreError):
                     # No stamp makes the next save refuse: the safe direction.
                     self.log.exception("Could not stamp the session state")
                     self.mw._state_stamp = None
@@ -561,7 +561,7 @@ class ActionsHandler(QObject):
             stale = session_state.is_stale(
                 self.mw.profile_manager.store, self.mw.session_path, self.mw._state_stamp
             )
-        except OSError:
+        except (OSError, StoreError):
             self.log.exception("Could not check the session state before exporting")
             show_error(
                 self.mw,
