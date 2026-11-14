@@ -345,9 +345,6 @@ class ProfileManager:
             # A failed read is not an empty list: the caller must see it.
             logger.exception("File system error listing clients")
             raise
-        except Exception:
-            logger.exception("Unexpected error listing clients")
-            return []
 
     ARCHIVE_DIR = "_archive"
 

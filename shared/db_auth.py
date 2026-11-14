@@ -12,14 +12,15 @@ from supabase import ClientOptions, create_client
 
 logger = logging.getLogger(__name__)
 
-TIMEOUT_SECONDS = 5
+TIMEOUT_SECONDS = 5  # to connect: an unreachable project fails fast
+TRANSFER_SECONDS = 60  # a large upload or history replace needs longer than that
 PROMPT_ATTEMPTS = 5
 _TOKEN_USER = "refresh_token"
 _UNREACHABLE = (httpx.HTTPError, AuthRetryableError)
 
 
 def _make_client():
-    http = httpx.Client(timeout=TIMEOUT_SECONDS)
+    http = httpx.Client(timeout=httpx.Timeout(TRANSFER_SECONDS, connect=TIMEOUT_SECONDS))
     return create_client(
         db_config.SUPABASE_URL, db_config.SUPABASE_PUBLISHABLE_KEY, ClientOptions(httpx_client=http)
     )
@@ -36,6 +37,11 @@ def connect(app_name: str, prompt: Callable[[], tuple[str, str] | None], factory
     """A signed-in client, or None (user cancelled, or the project is unreachable)."""
     service = f"{app_name}-db"
     client = factory()
+    # The client refreshes the access token in the background, and each refresh
+    # rotates the refresh token: keep the keyring's copy current or the next start fails.
+    client.auth.on_auth_state_change(
+        lambda event, session: _remember(service, session) if event == "TOKEN_REFRESHED" and session else None
+    )
     try:
         try:
             token = keyring.get_password(service, _TOKEN_USER)

@@ -59,6 +59,21 @@ def test_history_stale_stamp_conflicts(store):
     assert store.read_bytes(HISTORY) == b"Order_Number\n1\n2\n"
 
 
+def test_history_past_the_row_cap_reads_whole(store):
+    # max_rows (1000) caps every select; a short read here would be saved back as a loss
+    csv = "Order_Number\n" + "".join(f"{n}\n" for n in range(1500))
+    stamp = store.write_bytes_if(HISTORY, csv.encode(), None)
+    assert stamp == store.stamp(HISTORY)
+    assert store.read_bytes(HISTORY).decode() == csv
+
+
+def test_session_listing_past_the_row_cap(store):
+    names = [f"s{n:04}" for n in range(1100)]
+    store.client.table("clients").insert({"client_id": "X"}).execute()
+    store.client.table("sessions").insert([{"client_id": "X", "name": n} for n in names]).execute()
+    assert store.list_dir("Sessions/CLIENT_X") == names
+
+
 def test_history_missing_raises_not_found(store):
     with pytest.raises(StoreNotFound):
         store.read_bytes(HISTORY)

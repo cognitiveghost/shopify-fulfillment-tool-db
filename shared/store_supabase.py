@@ -20,6 +20,7 @@ from typing import Any
 
 import httpx
 from postgrest.exceptions import APIError
+from pydantic import ValidationError
 from storage3.exceptions import StorageException
 
 from shared.store import LockInfo, Store, StoreConflict, StoreError, StoreNotFound
@@ -27,6 +28,7 @@ from shared.store_routes import route
 
 BUCKET = "files"
 CAS_ATTEMPTS = 8
+PAGE = 1000  # rows per select page; PostgREST caps a response at max_rows
 DUPLICATE = "23505"  # unique_violation
 VERSION_CLASH = "40001"  # replace_fulfillment_history: version mismatch
 _PLACEHOLDER = ".emptyFolderPlaceholder"
@@ -34,7 +36,6 @@ _PLACEHOLDER = ".emptyFolderPlaceholder"
 _CLIENT_DIR = re.compile(r"(Clients|Sessions)/(_archive/)?CLIENT_([^/]+)")
 _LOCK_DIR = re.compile(r"Sessions/CLIENT_([^/]+)/([^/]+)/packing/([^/]+)")
 _SESSION_SUB = re.compile(r"Sessions/CLIENT_([^/]+)/([^/]+)(?:/(.*))?")
-_SINGLETONS = {"groups": "groups", "workers": "workers", "stats": "stats"}
 
 
 @dataclass(frozen=True)
@@ -54,7 +55,7 @@ def _row_for(rel: str) -> _Row | None:
         case "clients_field":
             return _Row("clients", {"client_id": k["client_id"]}, k["field"])
         case "groups" | "workers" | "stats":
-            return _Row(_SINGLETONS[r.kind], {"id": 1}, "body")
+            return _Row(r.kind, {"id": 1}, "body")
         case "session_info":
             return _Row("sessions", {"client_id": k["client_id"], "name": k["session_name"]}, "info")
         case "session_doc":
@@ -74,9 +75,12 @@ def _guard(fn):
     def wrapper(self, *args, **kwargs):
         try:
             return fn(self, *args, **kwargs)
-        except (StoreError, ValueError):
+        except StoreError:
             raise
-        except (APIError, StorageException, httpx.HTTPError, OSError) as e:
+        # JSONDecodeError and pydantic's ValidationError are ValueErrors from a cut-off
+        # response; route()'s own ValueError for a bad path passes through unwrapped.
+        except (APIError, StorageException, httpx.HTTPError, OSError,
+                json.JSONDecodeError, ValidationError) as e:
             raise StoreError(f"{fn.__name__}{args[:1]}: {e}") from e
     return wrapper
 
@@ -139,6 +143,17 @@ class SupabaseStore(Store):
         return version + 1
 
     @staticmethod
+    def _all(query: Callable[[], Any]) -> list[dict]:
+        """Every row of `query()`: a fresh ordered select(..., count="exact"), paged past
+        max_rows, which otherwise truncates the result without an error."""
+        out: list[dict] = []
+        while True:
+            res = query().range(len(out), len(out) + PAGE - 1).execute()
+            out += res.data
+            if not res.data or len(out) >= (res.count or 0):
+                return out
+
+    @staticmethod
     def _backoff(attempt: int) -> None:
         time.sleep(random.uniform(0, 0.03 * (attempt + 1)))
 
@@ -196,7 +211,7 @@ class SupabaseStore(Store):
             except StorageException as e:
                 raise self._missing_or_error(rel, e) from e
         if kind == "fulfillment_history":
-            return self._read_history(route(rel).key["client_id"], rel)[0]
+            return self._read_history(route(rel).key["client_id"], rel)
         return json.dumps(self.read_json(rel), ensure_ascii=False).encode("utf-8")
 
     @_guard
@@ -223,8 +238,7 @@ class SupabaseStore(Store):
             return self._blob_write_if(rel, data, expected)
         if kind == "fulfillment_history":
             cid = route(rel).key["client_id"]
-            self._write_history(cid, data, 0 if expected is None else expected)
-            return self._history_version(cid)
+            return self._write_history(cid, data, 0 if expected is None else expected)
         row = _row_for(rel)
         if row is None:
             raise ValueError(f"write_bytes_if: unsupported path {rel!r}")
@@ -270,9 +284,10 @@ class SupabaseStore(Store):
                     raise StoreConflict(rel) from e
                 raise
         else:
-            # ponytail: Storage has no conditional PUT, so this check-then-write can
-            # lose a write landing between the two calls; the one caller is the
-            # pickle state file, which is also guarded by the list lock.
+            # ponytail: Storage has no conditional PUT, so this is check-then-write: two
+            # PCs saving the same Fulfilment current_state.pkl inside one upload can both
+            # pass, and the returned stamp may be the other PC's. Nothing else guards it;
+            # gate the upload on a version row (a blob_versions table) to close it.
             try:
                 current = self._blob_stamp(rel)
             except StoreNotFound:
@@ -307,19 +322,19 @@ class SupabaseStore(Store):
         res = self._t("fulfillment_history_meta").select("version").eq("client_id", cid).limit(1).execute()
         return res.data[0]["version"] if res.data else 0
 
-    def _read_history(self, cid: str, rel: str) -> tuple[bytes, int]:
-        version = self._history_version(cid)
-        if version == 0:
+    def _read_history(self, cid: str, rel: str) -> bytes:
+        if self._history_version(cid) == 0:
             raise StoreNotFound(rel)
-        rows = (self._t("fulfillment_history").select("row").eq("client_id", cid)
-                .order("row_no").limit(1_000_000).execute().data)
+        rows = self._all(lambda: self._t("fulfillment_history").select("row", count="exact")
+                         .eq("client_id", cid).order("row_no"))
         buf = io.StringIO()
         writer = csv.writer(buf, lineterminator="\n")
         for item in rows:
             writer.writerow(item["row"].get("header") or item["row"].get("cells"))
-        return buf.getvalue().encode("utf-8"), version
+        return buf.getvalue().encode("utf-8")
 
-    def _write_history(self, cid: str, data: bytes, expected: int) -> None:
+    def _write_history(self, cid: str, data: bytes, expected: int) -> int:
+        """Replace the client's history if it is still at `expected`; the new version."""
         records = list(csv.reader(io.StringIO(data.decode("utf-8-sig"))))
         order_col = records[0].index("Order_Number") if records and "Order_Number" in records[0] else None
         payload = []
@@ -331,8 +346,8 @@ class SupabaseStore(Store):
                                 "cells": rec})
         self._ensure_client(cid)
         try:
-            self.client.rpc("replace_fulfillment_history",
-                            {"p_client": cid, "p_rows": payload, "p_expected_version": expected}).execute()
+            return self._rpc("replace_fulfillment_history",
+                             {"p_client": cid, "p_rows": payload, "p_expected_version": expected})
         except APIError as e:
             if e.code == VERSION_CLASH:
                 raise StoreConflict(cid) from e
@@ -366,15 +381,19 @@ class SupabaseStore(Store):
         return bool(res.data)
 
     def _dir_exists(self, root: str, archive: str | None, cid: str) -> bool:
-        table, col = ("clients", "client_id") if root == "Clients" else ("sessions", "client_id")
-        res = self._t(table).select(col).eq(col, cid).eq("archived", bool(archive)).limit(1).execute()
+        table = "clients" if root == "Clients" else "sessions"
+        res = self._t(table).select("client_id").eq("client_id", cid).eq("archived", bool(archive)).limit(1).execute()
         return bool(res.data)
 
     def _col(self, table: str, col: str, **eq) -> list[str]:
-        q = self._t(table).select(col)
-        for k, v in eq.items():
-            q = q.eq(k, v)
-        return [r[col] for r in q.execute().data]
+        """Column `col` of every matching row. Ordered by `col` itself, so paging over
+        ties may shuffle rows but never changes the values returned."""
+        def query():
+            q = self._t(table).select(col, count="exact")
+            for k, v in eq.items():
+                q = q.eq(k, v)
+            return q.order(col)
+        return [r[col] for r in self._all(query)]
 
     @_guard
     def stamp(self, rel):
@@ -392,7 +411,10 @@ class SupabaseStore(Store):
             if not res.data:
                 raise StoreNotFound(rel)
             return res.data[0]["id"]
-        cur = self._read_row(_row_for(rel))
+        row = _row_for(rel)
+        if row is None:
+            raise ValueError(f"stamp: not a file path: {rel!r}")
+        cur = self._read_row(row)
         if cur is None or cur[0] is None:
             raise StoreNotFound(rel)
         return cur[1]
@@ -404,15 +426,15 @@ class SupabaseStore(Store):
 
     def _list(self, rel: str) -> list[str]:
         if rel == "Clients":
-            return [f"CLIENT_{c}" for c in self._archived_clients("clients", False)] + ["_archive"] \
+            return [f"CLIENT_{c}" for c in self._col("clients", "client_id", archived=False)] + ["_archive"] \
                 + (["groups.json"] if self._t("groups").select("id").execute().data else []) \
                 + [n for n in self._storage_ls(rel)]
         if rel == "Clients/_archive":
-            return [f"CLIENT_{c}" for c in self._archived_clients("clients", True)]
+            return [f"CLIENT_{c}" for c in self._col("clients", "client_id", archived=True)]
         if rel == "Sessions":
-            return [f"CLIENT_{c}" for c in sorted(set(self._archived_clients("sessions", False)))] + ["_archive"]
+            return [f"CLIENT_{c}" for c in sorted(set(self._col("sessions", "client_id", archived=False)))] + ["_archive"]
         if rel == "Sessions/_archive":
-            return [f"CLIENT_{c}" for c in sorted(set(self._archived_clients("sessions", True)))]
+            return [f"CLIENT_{c}" for c in sorted(set(self._col("sessions", "client_id", archived=True)))]
         m = re.fullmatch(r"Clients/CLIENT_([^/]+)", rel)
         if m:
             return self._client_children(m.group(1), rel)
@@ -442,9 +464,6 @@ class SupabaseStore(Store):
         if m:
             return self._session_children(m.group(1), m.group(2), m.group(3) or "", rel)
         return self._storage_ls(rel)
-
-    def _archived_clients(self, table: str, archived: bool) -> list[str]:
-        return self._col(table, "client_id", archived=archived)
 
     def _client_children(self, cid: str, rel: str) -> list[str]:
         out = self._storage_ls(rel)
@@ -577,7 +596,7 @@ class SupabaseStore(Store):
         if rel == "":
             return self.cache_dir
         path = self.cache_dir / rel
-        if "." not in rel.rsplit("/", 1)[-1] or route(rel).kind != "blob":
+        if route(rel).kind != "blob" or "." not in rel.rsplit("/", 1)[-1]:
             return path  # a folder (Clients, Sessions/..): nothing to fetch, and no network call
         # ponytail: re-downloaded on every call, no freshness check; add an etag
         # compare when a caller needs to open the same large file repeatedly.

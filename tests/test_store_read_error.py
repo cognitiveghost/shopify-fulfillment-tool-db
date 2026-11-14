@@ -3,6 +3,8 @@
 Runs without the local Supabase stack: the client is a stub.
 """
 
+import json
+
 import httpx
 import pytest
 from storage3.exceptions import StorageApiError
@@ -52,6 +54,15 @@ def test_read_error_raises_not_empty(store, profile_manager):
     with pytest.raises(StoreError) as clients_error:
         profile_manager.list_clients()
     assert not isinstance(clients_error.value, StoreNotFound)
+
+
+def test_a_cut_off_response_raises_not_empty(store, profile_manager, monkeypatch):
+    def cut_off(name):
+        raise json.JSONDecodeError("Unterminated string", '[{"client_id": "A', 15)
+
+    monkeypatch.setattr(store.client, "table", cut_off)
+    with pytest.raises(StoreError):
+        profile_manager.list_clients()
 
 
 def test_a_failed_session_load_reaches_the_page_as_an_error(store, profile_manager):

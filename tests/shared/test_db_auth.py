@@ -42,6 +42,10 @@ def _session(token):
 class FakeAuth:
     def __init__(self, *, refresh=None, sign_in=None):
         self.refresh, self.sign_in, self.calls = refresh, sign_in, []
+        self.listeners = []
+
+    def on_auth_state_change(self, callback):
+        self.listeners.append(callback)
 
     def refresh_session(self, token):
         self.calls.append(("refresh", token))
@@ -64,6 +68,14 @@ def test_stored_token_means_no_prompt(kr):
     client = db_auth.connect("App", lambda: prompts.append(1), _factory(auth))
     assert client is not None and prompts == []
     assert kr.d[("App-db", "refresh_token")] == "rotated"
+
+
+def test_background_refresh_saves_the_rotated_token(kr):
+    auth = FakeAuth(sign_in=lambda c: _session("first"))
+    assert db_auth.connect("App", lambda: ("a@b.c", "pw"), _factory(auth)) is not None
+    for listener in auth.listeners:
+        listener("TOKEN_REFRESHED", SimpleNamespace(refresh_token="second"))
+    assert kr.d[("App-db", "refresh_token")] == "second"
 
 
 def test_no_token_prompts_once_and_saves(kr):
