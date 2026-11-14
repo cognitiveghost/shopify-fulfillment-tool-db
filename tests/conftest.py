@@ -28,6 +28,10 @@ from gui.ui_manager import _COLLAPSED_KEY
 os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
 
 
+def pytest_configure(config):
+    config.addinivalue_line("markers", "supabase: needs the local Supabase stack (SUPABASE_TEST_URL)")
+
+
 def _rule_block(sheet: str, selector: str) -> str:
     """The text of one QSS rule, from `selector` at the start of a
     (possibly indented) line to the next `}`. Used by theme tests to assert

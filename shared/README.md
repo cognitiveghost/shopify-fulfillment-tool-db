@@ -32,6 +32,8 @@ every change here.
 | `atomic_write.py` | Atomic JSON writes (temp file + rename) for network storage |
 | `file_lock.py` | Cross-platform advisory locking for shared JSON files |
 | `store.py` | Storage seam (`Store`) and its file-backed `FileStore`: JSON/bytes I/O, list locks, session claims |
+| `store_routes.py` | Pure router: which table or Storage path a `Store` rel path lives at (`route()`) |
+| `store_supabase.py` | `SupabaseStore`: JSON in tables (version CAS), blobs in Storage `files`, list locks via RPC |
 | `metadata_utils.py` | Session metadata read/write helpers |
 | `server_connection.py` | File-server path resolution, persistence, and the connection-settings dialog |
 | `assets/` | Bundled fonts (Inter) and icons (Lucide SVGs, `currentColor`-recolourable), each with its license |
