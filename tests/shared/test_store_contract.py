@@ -270,3 +270,12 @@ def test_lock_info_reads_without_taking(store):
     assert store.lock_info(LIST).holder_pc == "pc1"  # reading did not change the holder
     store.release_list_lock(LIST, "pc1")
     assert store.lock_info(LIST) is None
+
+
+def test_virtual_session_folders_exist_when_they_have_children(store):
+    store.write_json(S + "session_info.json", {"status": "active"})
+    assert not store.exists(S + "packing_lists") and not store.exists(S + "packing/list1")
+    store.write_json(S + "packing_lists/list1.json", {"orders": []})
+    store.write_json(S + "packing/list1/packing_state.json", {"progress": {}})
+    assert store.exists(S + "packing_lists") and store.exists(S + "packing")
+    assert store.exists(S + "packing/list1")

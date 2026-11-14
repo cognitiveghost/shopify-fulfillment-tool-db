@@ -369,7 +369,10 @@ class SupabaseStore(Store):
             return bool(res.data)
         r = route(rel)
         if r.kind == "blob":
-            return bool(self._bucket.exists(rel)) or bool(self._storage_ls(rel))
+            if bool(self._bucket.exists(rel)) or bool(self._storage_ls(rel)):
+                return True
+            # a table-derived folder (packing_lists/, packing/<list>) exists when it has children
+            return "." not in rel.rsplit("/", 1)[-1] and bool(self._list(rel))
         if r.kind == "client_history":
             return self._exists_history(r)
         if r.kind == "fulfillment_history":
