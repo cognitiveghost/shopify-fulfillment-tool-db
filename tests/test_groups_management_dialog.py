@@ -6,7 +6,7 @@ from PySide6.QtGui import QColor
 
 import gui.groups_management_dialog as module
 from gui.groups_management_dialog import GroupsManagementDialog
-from shared.store import FileStore
+from shared.store import FileStore, StoreError
 from shopify_tool.groups_manager import GroupsManager
 
 
@@ -136,6 +136,19 @@ def test_nothing_selected_means_edit_and_delete_do_nothing(qtbot, groups, profil
     dialog._edit_group()
     dialog._delete_group()
     assert len(groups.list_groups()) == 1 and told == {"toasts": [], "errors": []}
+
+
+def test_delete_reports_when_the_clients_cannot_be_read_and_keeps_the_group(
+    qtbot, groups, profile_manager, monkeypatch, told
+):
+    groups.create_group("Bulk")
+    dialog = _dialog(qtbot, groups, profile_manager)
+    _select(dialog, "Bulk")
+    monkeypatch.setattr(profile_manager, "list_clients", lambda: (_ for _ in ()).throw(StoreError("Clients")))
+    monkeypatch.setattr(module.ConfirmDialog, "ask", staticmethod(lambda *a, **k: True))
+    dialog._delete_group()
+    assert [g["name"] for g in groups.list_groups()] == ["Bulk"]
+    assert told["errors"] == ["The group wasn't deleted"]
 
 
 def test_a_group_list_that_cannot_load_is_reported(qtbot, groups, profile_manager, monkeypatch, told):

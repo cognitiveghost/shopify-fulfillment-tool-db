@@ -37,7 +37,9 @@ from gui.session_write_queue import (
 from gui.ui_manager import UIManager
 from gui.web_page import when_painted
 from gui.worker import Worker
+from shared.components.sign_in_dialog import SignInDialog
 from shared.i18n import _
+from shared.store_mode import Mode, open_store
 from shared.update_flow import UpdateFlow
 from shared.updater import AppIdentity
 from shopify_tool import (
@@ -50,16 +52,40 @@ from shopify_tool import (
 )
 from shopify_tool.analysis import recalculate_statistics
 from shopify_tool.groups_manager import GroupsManager
-from shopify_tool.profile_manager import ProfileManager, ProfileManagerError
+from shopify_tool.profile_manager import (
+    ProfileManager,
+    ProfileManagerError,
+    resolve_base_path,
+)
 from shopify_tool.session_manager import SessionManager
 from shopify_tool.stock_ledger import with_stock_left
 from shopify_tool.tag_manager import _normalize_tag_categories
 from shopify_tool.undo_manager import UndoManager
+from shopify_tool.utils import get_persistent_data_path
 
 logger = logging.getLogger(__name__)
 
 
 _DB_TRIAL = " (DB trial)"  # brand suffix, not translated
+
+
+def open_profile_manager(parent) -> tuple[Mode | None, ProfileManager]:
+    """Choose this run's storage (spec 7.3) and open the ProfileManager over it.
+
+    FULFILLMENT_STORE_MODE=file skips Supabase entirely (the tests and the dev
+    runner set it), so the result has no mode: None.
+    """
+    if os.environ.get("FULFILLMENT_STORE_MODE", "").strip().lower() == "file":
+        return None, ProfileManager(require_connection=False)
+    mode, store = open_store(
+        "ShopifyTool-DB",
+        fallback_root=resolve_base_path(),
+        cache_dir=Path(get_persistent_data_path("db_cache")),
+        prompt=lambda: SignInDialog.ask(parent),
+    )
+    if mode is Mode.SUPABASE:
+        return mode, ProfileManager(store=store, require_connection=False)
+    return mode, ProfileManager(require_connection=False)
 
 
 def follow_inventory_memory(profile_manager, client_id: str, session_path: str, df: pd.DataFrame) -> None:
@@ -184,6 +210,7 @@ class MainWindow(QMainWindow):
         self.session_facts = None
 
         # Initialize new architecture managers
+        self.store_mode: Mode | None = None
         self._init_managers()
 
         # Initialize undo manager
@@ -211,6 +238,13 @@ class MainWindow(QMainWindow):
         # Emitted once the widgets exist, so every slot has something to
         # disable. Re-emitted by the Server Connection dialog on success.
         self.connectionChanged.emit(self.is_connected())
+        if self.store_mode is Mode.FILE:
+            # Persistent until dismissed (ErrorBanner): the run stays on the share.
+            show_error(
+                self,
+                _("Database unreachable: working from file server"),
+                _("Changes save to the file server. Restart the app to try the database again."),
+            )
 
     def is_connected(self) -> bool:
         return bool(getattr(self.profile_manager, "is_network_available", False))
@@ -261,7 +295,7 @@ class MainWindow(QMainWindow):
         # The recovery prompt is still reachable: it is what "Server
         # connection..." in the overflow opens. ADR 0004.
         try:
-            self.profile_manager = ProfileManager(require_connection=False)
+            self.store_mode, self.profile_manager = open_profile_manager(self)
         except Exception as e:
             QMessageBox.critical(
                 self,

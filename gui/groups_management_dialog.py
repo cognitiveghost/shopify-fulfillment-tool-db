@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 from gui.components import ConfirmDialog, show_error, toast
 from gui.theme_manager import apply_dialog_button_roles, get_theme_manager
 from shared.i18n import _
+from shared.store import StoreError
 from shopify_tool.groups_manager import GroupsManager, GroupsManagerError
 
 logger = logging.getLogger(__name__)
@@ -317,9 +318,14 @@ class GroupsManagementDialog(QDialog):
         name = group.get("name", "Unknown")
 
         # Count clients in group
-        clients_in_group = self.groups_manager.get_clients_in_group(
-            group_id, self.profile_manager
-        )
+        try:
+            clients_in_group = self.groups_manager.get_clients_in_group(
+                group_id, self.profile_manager
+            )
+        except StoreError:
+            logger.exception("Could not read the clients to count for the group")
+            show_error(self, _("The group wasn't deleted"), _("Details are in Logs."))
+            return
         client_count = len(clients_in_group)
 
         if not ConfirmDialog.ask(

@@ -53,3 +53,7 @@ qrcode>=8.2              # QR code generation (SVG vector output via blabel temp
 pypdfium2>=5.14.0          # PDF rasterization for raw ZPL printing
 zebrafy>=2.0.0             # PIL Image -> ZPL conversion for raw ZPL printing
 pywin32>=312; sys_platform == "win32"  # win32print RAW spooling (Windows only)
+
+# Supabase fork (shared/store_supabase.py, shared/db_auth.py)
+supabase==2.34.1
+keyring==25.7.0

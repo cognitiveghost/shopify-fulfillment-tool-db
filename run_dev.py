@@ -5,6 +5,7 @@ from pathlib import Path
 DEV_SERVER = Path(__file__).parent / "dev-server"
 DEV_SERVER.mkdir(exist_ok=True)
 os.environ.setdefault("FULFILLMENT_SERVER_PATH", str(DEV_SERVER))
+os.environ.setdefault("FULFILLMENT_STORE_MODE", "file")  # the dev server is a folder, never Supabase
 
 from gui_main import main
 

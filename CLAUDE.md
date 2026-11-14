@@ -37,6 +37,10 @@ QT_QPA_PLATFORM=offscreen python -m pytest
 
 CI runs lint + this suite + a headless smoke test (see `.github/workflows/build_release.yml`).
 
+The `@pytest.mark.supabase` tests need the local Supabase stack (`supabase start`) and its keys in
+`SUPABASE_TEST_URL` / `SUPABASE_TEST_ANON_KEY` / `SUPABASE_TEST_SERVICE_KEY`; without them they skip and
+coverage fails. `scripts/run_tests.sh` sets them from `supabase status`, so prefer it for the gate.
+
 
 ---
 
