@@ -26,6 +26,8 @@ from gui.ui_manager import _COLLAPSED_KEY
 # Chromium's sandbox needs unprivileged user namespaces, which the CI runner's
 # AppArmor profile refuses. Test-only: the app never sets this.
 os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
+# No test reaches Supabase or the keyring: the file share only, unless a test opts in.
+os.environ.setdefault("FULFILLMENT_STORE_MODE", "file")
 
 
 def pytest_configure(config):

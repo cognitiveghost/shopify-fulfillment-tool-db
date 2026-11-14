@@ -58,6 +58,13 @@ class ValidationError(ProfileManagerError):
 PROD_SERVER_PATH = r"\\192.168.88.101\_Fulfilment_\0UFulfilment"
 
 
+def resolve_base_path() -> str:
+    """The fulfillment share: FULFILLMENT_SERVER_PATH, then the saved connection, then production."""
+    path = resolve_server_path("ShopifyTool-DB", "FULFILLMENT_SERVER_PATH", PROD_SERVER_PATH)
+    logger.info(f"Using server path: {path}")
+    return path
+
+
 class ProfileManager:
     """Manages client profiles and centralized configuration on file server.
 
@@ -219,11 +226,7 @@ class ProfileManager:
         Returns:
             Base path string
         """
-        path = resolve_server_path(
-            "ShopifyTool-DB", "FULFILLMENT_SERVER_PATH", PROD_SERVER_PATH
-        )
-        logger.info(f"Using server path: {path}")
-        return path
+        return resolve_base_path()
 
     def _is_dev_environment(self) -> bool:
         """Check if running in development environment.
