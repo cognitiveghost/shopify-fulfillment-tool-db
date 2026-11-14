@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from shared.store import FileStore
+from shared.store import FileStore, StoreError
 from shopify_tool.profile_manager import ProfileManager, ProfileManagerError
 
 
@@ -457,6 +457,16 @@ class TestClientConfigFiles:
         (profile_manager.clients_dir / "notes").mkdir()
         (profile_manager.clients_dir / "CLIENT_FILE").write_text("x", encoding="utf-8")
         assert profile_manager.list_clients() == ["AAA", "BBB"]
+
+    def test_list_clients_raises_store_error_rather_than_an_empty_list(self, profile_manager, monkeypatch):
+        profile_manager.create_client_profile("M", "Client")
+
+        def unreadable(rel):
+            raise StoreError(rel)
+
+        monkeypatch.setattr(profile_manager.store, "list_dir", unreadable)
+        with pytest.raises(StoreError):
+            profile_manager.list_clients()
 
     def test_update_last_accessed_stamps_the_metadata(self, profile_manager):
         profile_manager.create_client_profile("ACME", "Acme")
