@@ -4,7 +4,9 @@
 file format matches the Packer's SessionLockManager so a production Packer PC
 and a Store-based PC agree on a share.
 """
+import contextlib
 import json
+import logging
 import os
 import shutil
 import tempfile
@@ -23,6 +25,10 @@ LOCK_FILENAME = ".session.lock"
 STALE_SECONDS = 120
 LOCK_READ_ATTEMPTS = 3
 LOCK_READ_RETRY_SECONDS = 0.2
+SESSION_INDEX = "session_index.json"  # per-client cache behind FileStore.query_sessions
+SESSION_INFO = "session_info.json"
+
+logger = logging.getLogger("ShopifyToolLogger")
 
 
 def _now() -> datetime:
@@ -108,6 +114,44 @@ class Store:
     def stamp(self, rel: str) -> object:
         """Opaque change token (compare with ==); StoreNotFound if absent, StoreError on other OSErrors."""
         raise NotImplementedError
+
+    def query_sessions(self, client_id: str) -> list[dict]:
+        """One dict per non-archived session of the client: its session_info plus `session_name`.
+
+        Sessions with no or unreadable session_info are skipped. Unordered. An unknown
+        client gives []; a failed read raises StoreError, never [].
+        """
+        raise NotImplementedError
+
+
+@contextlib.contextmanager
+def _exclusive_lock(lock_path: Path):
+    """Blocking exclusive lock on a sidecar `.lock` file (the session index's only lock).
+
+    Without this, two near-simultaneous read-modify-write cycles on the file
+    `lock_path` guards each read the same on-disk snapshot before either writes
+    back, and one update silently loses the other's change.
+    """
+    with open(lock_path, "a+") as lock_file:
+        locked = False
+        try:
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            locked = True
+            yield
+        finally:
+            # Release only a lock this call took (AUDIT-07-L4).
+            if locked and os.name == "nt":
+                import msvcrt
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            elif locked:
+                import fcntl
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 class FileStore(Store):
@@ -238,6 +282,168 @@ class FileStore(Store):
                 return self.stamp(rel)
         except (OSError, FileLockError) as e:
             raise StoreError(rel) from e
+
+    # --- session index: a per-client cache of session_info.json for query_sessions ---
+    def query_sessions(self, client_id):
+        client_rel = f"Sessions/CLIENT_{client_id}"
+        try:
+            if not self.exists(client_rel):
+                return []
+            entries = self._read_index(client_rel)
+            try:
+                if entries is None:
+                    entries = self._rebuild_index(client_rel)
+                else:
+                    entries = self._refresh_index(client_rel, entries)
+            except OSError:
+                # The index is a cache. A lock that can't be had costs one
+                # slow listing, read from the folders and not written back.
+                logger.warning("Session index is locked; listing the folders instead", exc_info=True)
+                entries = self._scan_sessions(client_rel)
+        except OSError as e:
+            raise StoreError(client_rel) from e
+        return [{k: v for k, v in e.items() if not k.startswith("_")}
+                for e in entries if not e.get("_no_session_info")]
+
+    def _index_lock(self, client_rel: str) -> Path:
+        return self._p(f"{client_rel}/{SESSION_INDEX}.lock")
+
+    def _read_index(self, client_rel: str) -> list[dict] | None:
+        """The raw index, or None if it doesn't exist / is unreadable."""
+        try:
+            entries = self.read_json(f"{client_rel}/{SESSION_INDEX}")
+        except StoreNotFound:
+            return None
+        except StoreError:
+            logger.exception("Failed to read session index, treating as missing")
+            return None
+        if not isinstance(entries, list):
+            logger.warning("Session index is not a list, treating as missing")
+            return None
+        return [e for e in entries if isinstance(e, dict)]
+
+    def _write_index(self, client_rel: str, entries: list[dict]) -> None:
+        self.write_json(f"{client_rel}/{SESSION_INDEX}", entries)
+
+    def _listing(self, client_rel: str) -> dict[str, float]:
+        """{folder name: st_mtime} for every session folder, from one listing.
+
+        scandir, not iterdir: on Windows the directory listing already
+        carries the timestamps, so DirEntry.stat() costs no extra network
+        round trip on the share.
+        """
+        listing = {}
+        with os.scandir(self._p(client_rel)) as it:
+            for item in it:
+                try:
+                    if item.is_dir():
+                        listing[item.name] = item.stat().st_mtime
+                except OSError:
+                    continue
+        return listing
+
+    def _index_entry(self, client_rel: str, name: str, dir_mtime: float) -> dict:
+        """One index entry, the raw session_info.json of folder `name`.
+
+        `_dir_mtime` is the folder's mtime from the listing taken before the
+        read, so a write that lands during the read shows up as a change on
+        the next listing. A folder with no session_info.json gets a marker
+        entry with its mtime, so it is read again only when that changes. A
+        session_info.json that is there but unreadable gets a marker with no
+        mtime, so the next listing tries again rather than hiding a real
+        session until it next changes.
+        """
+        def marker(mtime):
+            return {"session_name": name, "_dir_mtime": mtime, "_no_session_info": True}
+
+        try:
+            info = self.read_json(f"{client_rel}/{name}/{SESSION_INFO}")
+        except StoreNotFound:
+            return marker(dir_mtime)
+        except StoreError:
+            logger.warning("Session info unreadable, will retry: %s", name, exc_info=True)
+            return marker(None)
+        if not isinstance(info, dict):
+            return marker(dir_mtime)
+        info["session_name"] = name
+        info["_dir_mtime"] = dir_mtime
+        return info
+
+    @staticmethod
+    def _index_matches(listing: dict[str, float], entries: list[dict]) -> bool:
+        """True if every folder has exactly one entry with its current mtime."""
+        if len(entries) != len(listing):
+            return False
+        for entry in entries:
+            name = entry.get("session_name")
+            if name not in listing or entry.get("_dir_mtime") != listing[name]:
+                return False
+        return True
+
+    def _refresh_index(self, client_rel: str, entries: list[dict]) -> list[dict]:
+        """Reread only the session folders that changed since the index saw them.
+
+        Each entry records its folder's mtime (`_dir_mtime`). Packing Tool
+        writes session_info.json as temp-file + rename (see atomic_write),
+        which bumps the folder's mtime, so its writes show up here as a
+        changed entry. The comparison is per entry and by equality: clocks
+        that disagree between PCs no longer matter, and a mismatch costs one
+        reread, never wrong data. A legacy entry without `_dir_mtime` counts
+        as changed, so the first listing after the upgrade rereads each
+        session once.
+
+        Nothing changed means no lock and no write. Changed sessions are read
+        before the lock is taken.
+        """
+        listing = self._listing(client_rel)
+        if self._index_matches(listing, entries):
+            return entries
+
+        # The slow part -- one session_info.json per changed folder -- runs
+        # without the lock. Under it, an entry read here is used only when its
+        # folder's mtime has not moved since.
+        known = {e.get("session_name"): e for e in entries}
+        pre = {}
+        for name, dir_mtime in listing.items():
+            entry = known.get(name)
+            if entry is None or entry.get("_dir_mtime") != dir_mtime:
+                pre[name] = (dir_mtime, self._index_entry(client_rel, name, dir_mtime))
+
+        with _exclusive_lock(self._index_lock(client_rel)):
+            current = self._read_index(client_rel) or []
+            listing = self._listing(client_rel)
+            by_name = {e.get("session_name"): e for e in current}
+            refreshed = []
+            for name, dir_mtime in listing.items():
+                entry = by_name.get(name)
+                if entry is None or entry.get("_dir_mtime") != dir_mtime:
+                    early = pre.get(name)
+                    if early is not None and early[0] == dir_mtime:
+                        entry = early[1]
+                    else:
+                        entry = self._index_entry(client_rel, name, dir_mtime)
+                refreshed.append(entry)
+            # A session_info.json that still can't be read is retried on every
+            # listing and rereads the same marker: no write for that.
+            if refreshed != current:
+                self._write_index(client_rel, refreshed)
+        return refreshed
+
+    def _scan_sessions(self, client_rel: str) -> list[dict]:
+        """Full folder scan, used when the index can't be read or written."""
+        return [self._index_entry(client_rel, name, dir_mtime)
+                for name, dir_mtime in self._listing(client_rel).items()]
+
+    def _rebuild_index(self, client_rel: str) -> list[dict]:
+        """Full scan + persist, when no readable index exists yet.
+
+        Scan and write both happen under the index lock, so a concurrent
+        rebuild or refresh cannot be overwritten by a stale snapshot.
+        """
+        with _exclusive_lock(self._index_lock(client_rel)):
+            entries = self._scan_sessions(client_rel)
+            self._write_index(client_rel, entries)
+        return entries
 
     # --- list locks (.session.lock, same JSON as the Packer's SessionLockManager) ---
     def _lock_path(self, list_dir):

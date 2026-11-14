@@ -2,16 +2,16 @@
 
 Packing Tool records the order numbers it completed into the
 `packing_progress` block of each session's `session_info.json`. This module
-reads them through `SessionManager.list_client_sessions()`, which serves the
-per-client `session_index.json` cache -- one network read instead of a walk
-of the session tree.
+reads them through `SessionManager.list_client_sessions()`, which asks the
+Store for `query_sessions()`. FileStore answers from a per-client
+`session_index.json` cache (one read instead of a walk of the session tree);
+SupabaseStore answers with one query.
 
-Going through that method rather than reading the index file directly is
-load-bearing, not stylistic: it is the only path that runs
-`SessionManager._refresh_index()`, which rereads a session whose folder
-mtime no longer matches its index entry. Packing Tool's writes are exactly
-that case, so a raw index read would report the packed orders as empty
-forever.
+Going through that method rather than reading any cache file directly is
+load-bearing, not stylistic: FileStore's cache is refreshed by folder mtime
+(`FileStore._refresh_index`), which rereads a session whose folder mtime no
+longer matches its entry. Packing Tool's writes are exactly that case, so a
+raw index read would report the packed orders as empty forever.
 
 Everything here is best-effort by contract: a missing file, malformed JSON
 or an old-format entry yields an empty result and a log line. Repeat

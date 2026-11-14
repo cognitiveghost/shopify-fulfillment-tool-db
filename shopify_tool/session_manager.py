@@ -20,14 +20,12 @@ Directory Structure:
 """
 
 import contextlib
-import json
 import logging
 import os
 from datetime import datetime
 from pathlib import Path
 from typing import ClassVar
 
-from shared.atomic_write import atomic_write_json
 from shared.store import Store, StoreNotFound
 from shopify_tool.session_state import session_rel
 
@@ -71,9 +69,6 @@ class SessionManager:
 
     # Valid session statuses
     VALID_STATUSES: ClassVar[list[str]] = ["active", "completed", "abandoned", "archived"]
-
-    # Per-client session index cache filename (see docs/superpowers/specs/2026-07-27-ui-responsiveness-design.md)
-    INDEX_FILENAME: ClassVar[str] = "session_index.json"
 
     def __init__(self, profile_manager, store: Store):
         """Initialize SessionManager.
@@ -170,10 +165,6 @@ class SessionManager:
 
             self.store.write_json(f"{rel}/session_info.json", session_info)
 
-            try:
-                self._upsert_index_entry(session_path, session_info)
-            except Exception:
-                logger.exception(f"Failed to update session index for {session_path}")
             self.profile_manager.invalidate_metadata_cache(client_id)
 
             logger.info(f"Session created: CLIENT_{client_id}/{session_name}")
@@ -244,81 +235,35 @@ class SessionManager:
         client_id: str,
         status_filter: str | None = None
     ) -> list[dict]:
-        """List all sessions for a client.
+        """List all sessions for a client, newest first.
 
-        Reads the per-client session_index.json cache instead of opening every
-        session's session_info.json (see docs/superpowers/specs/2026-07-27-ui-responsiveness-design.md).
-        Folders whose mtime no longer matches their entry are reread first
-        (see _refresh_index).
+        The Store answers with each session's session_info (query_sessions).
+        This adds the session path, and the fields older sessions lack.
 
         Args:
             client_id (str): Client ID
             status_filter (str, optional): Filter by status ("active", "completed", etc.)
 
         Returns:
-            List[Dict]: List of session info dictionaries, sorted by creation date (newest first)
-                Each dict contains session metadata including session_name, status, created_at
+            List[Dict]: session_info dicts sorted by created_at (newest first), each
+                with session_name and session_path
         """
         client_id = client_id.upper()
         client_rel = self._client_rel(client_id)
 
-        if not self.store.exists(client_rel):
-            return []
-        client_sessions_dir = self.store.local_path(client_rel)
-
-        entries = self._read_index(client_sessions_dir)
-        try:
-            if entries is None:
-                entries = self._rebuild_index(client_sessions_dir)
-            else:
-                entries = self._refresh_index(client_sessions_dir, entries)
-        except OSError:
-            # The index is a cache. A lock that can't be had costs one
-            # slow listing, read from the folders and not written back.
-            logger.warning("Session index is locked; listing the folders instead", exc_info=True)
-            entries = self._scan_sessions(client_sessions_dir)
-
         sessions = []
-        for entry in entries:
-            if entry.get("_no_session_info"):
-                continue
-            session_info = {k: v for k, v in entry.items() if not k.startswith("_")}
-            session_info["session_path"] = str(client_sessions_dir / session_info["session_name"])
+        for session_info in self.store.query_sessions(client_id):
             if status_filter and session_info.get("status") != status_filter:
                 continue
+            session_path = str(self.store.local_path(f"{client_rel}/{session_info['session_name']}"))
+            session_info["session_path"] = session_path
+            session_info.setdefault("comments", "")
+            if "statistics" not in session_info:  # legacy session, before statistics were stored
+                session_info["statistics"] = self.calculate_session_statistics(session_path)
             sessions.append(session_info)
 
         sessions.sort(key=lambda x: x.get("created_at", ""), reverse=True)
         return sessions
-
-    @contextlib.contextmanager
-    def _exclusive_lock(self, lock_path: Path):
-        """Blocking exclusive lock on an arbitrary sidecar `.lock` file.
-
-        Without this, two near-simultaneous read-modify-write cycles on the
-        file `lock_path` guards each read the same on-disk snapshot before
-        either writes back, and one update silently loses the other's change.
-        """
-        with open(lock_path, "a+") as lock_file:
-            locked = False
-            try:
-                if os.name == "nt":
-                    import msvcrt
-                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
-                else:
-                    import fcntl
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-                locked = True
-                yield
-            finally:
-                # Release only a lock this call took (AUDIT-07-L4).
-                if locked and os.name == "nt":
-                    import msvcrt
-                    lock_file.seek(0)
-                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
-                elif locked:
-                    import fcntl
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     def _info_rel(self, session_path) -> str:
         return f"{session_rel(self.store, session_path)}/session_info.json"
@@ -384,188 +329,6 @@ class SessionManager:
             logger.exception("Failed to load session info")
             return None
 
-    def _index_lock_path(self, client_sessions_dir: Path) -> Path:
-        return client_sessions_dir / f"{self.INDEX_FILENAME}.lock"
-
-    def _read_index(self, client_sessions_dir: Path) -> list[dict] | None:
-        """Read the raw index file, or None if it doesn't exist / is unreadable."""
-        index_path = client_sessions_dir / self.INDEX_FILENAME
-        if not index_path.exists():
-            return None
-        try:
-            with open(index_path, encoding="utf-8") as f:
-                entries = json.load(f)
-        except Exception:
-            logger.exception("Failed to read session index, treating as missing")
-            return None
-        if not isinstance(entries, list):
-            logger.warning("Session index is not a list, treating as missing")
-            return None
-        return [e for e in entries if isinstance(e, dict)]
-
-    def _listing(self, client_sessions_dir: Path) -> dict[str, float]:
-        """{folder name: st_mtime} for every session folder, from one listing.
-
-        scandir, not iterdir: on Windows the directory listing already
-        carries the timestamps, so DirEntry.stat() costs no extra network
-        round trip on the share.
-        """
-        listing = {}
-        with os.scandir(client_sessions_dir) as it:
-            for item in it:
-                try:
-                    if item.is_dir():
-                        listing[item.name] = item.stat().st_mtime
-                except OSError:
-                    continue
-        return listing
-
-    def _index_entry(self, session_dir: Path, dir_mtime: float) -> dict:
-        """One index entry, read from the folder's session_info.json.
-
-        `_dir_mtime` is the folder's mtime from the listing taken before the
-        read, so a write that lands during the read shows up as a change on
-        the next listing. The entry is keyed by the folder's name, which is
-        what list_client_sessions builds the session path from.
-
-        A folder with no session_info.json (a manual archive, a half-deleted
-        session) gets a marker entry instead, so it is read again only when
-        its mtime changes. A session_info.json that is there but could not be
-        read (the share blinked, a torn file) gets a marker with no mtime, so
-        the next listing tries again rather than hiding a real session until
-        it next changes. list_client_sessions never returns markers.
-        """
-        info = self.get_session_info(str(session_dir))
-        if not info:
-            try:
-                missing = not (session_dir / "session_info.json").exists()
-            except OSError:
-                missing = False
-            return {
-                "session_name": session_dir.name,
-                "_dir_mtime": dir_mtime if missing else None,
-                "_no_session_info": True,
-            }
-        info.pop("session_path", None)
-        info["session_name"] = session_dir.name
-        info["_dir_mtime"] = dir_mtime
-        return info
-
-    @staticmethod
-    def _index_matches(listing: dict[str, float], entries: list[dict]) -> bool:
-        """True if every folder has exactly one entry with its current mtime."""
-        if len(entries) != len(listing):
-            return False
-        for entry in entries:
-            name = entry.get("session_name")
-            if name not in listing or entry.get("_dir_mtime") != listing[name]:
-                return False
-        return True
-
-    def _refresh_index(self, client_sessions_dir: Path, entries: list[dict]) -> list[dict]:
-        """Reread only the session folders that changed since the index saw them.
-
-        Each entry records its folder's mtime (`_dir_mtime`). Packing Tool
-        writes session_info.json as temp-file + rename (see
-        shared.atomic_write), which bumps the folder's mtime, so its writes
-        show up here as a changed entry. This class's own writers record the
-        folder's mtime after the write they mirror, so they never cause a
-        reread. The comparison is per entry and by equality: clocks that
-        disagree between PCs no longer matter, and a mismatch costs one
-        reread, never wrong data. A legacy entry without `_dir_mtime` counts
-        as changed, so the first listing after the upgrade rereads each
-        session once.
-
-        Nothing changed means no lock and no write. Changed sessions are read
-        before the lock is taken.
-        """
-        listing = self._listing(client_sessions_dir)
-        if self._index_matches(listing, entries):
-            return entries
-
-        # The slow part -- one session_info.json per changed folder -- runs
-        # without the lock. Under it, an entry read here is used only when its
-        # folder's mtime has not moved since.
-        known = {e.get("session_name"): e for e in entries}
-        pre = {}
-        for name, dir_mtime in listing.items():
-            entry = known.get(name)
-            if entry is None or entry.get("_dir_mtime") != dir_mtime:
-                pre[name] = (dir_mtime, self._index_entry(client_sessions_dir / name, dir_mtime))
-
-        with self._exclusive_lock(self._index_lock_path(client_sessions_dir)):
-            current = self._read_index(client_sessions_dir) or []
-            listing = self._listing(client_sessions_dir)
-            by_name = {e.get("session_name"): e for e in current}
-            refreshed = []
-            for name, dir_mtime in listing.items():
-                entry = by_name.get(name)
-                if entry is None or entry.get("_dir_mtime") != dir_mtime:
-                    early = pre.get(name)
-                    if early is not None and early[0] == dir_mtime:
-                        entry = early[1]
-                    else:
-                        entry = self._index_entry(client_sessions_dir / name, dir_mtime)
-                refreshed.append(entry)
-            # A session_info.json that still can't be read is retried on every
-            # listing and rereads the same marker: no write for that.
-            if refreshed != current:
-                self._write_index(client_sessions_dir, refreshed)
-        return refreshed
-
-    def _write_index(self, client_sessions_dir: Path, entries: list[dict]) -> None:
-        index_path = client_sessions_dir / self.INDEX_FILENAME
-        atomic_write_json(index_path, entries)
-
-    def _scan_sessions(self, client_sessions_dir: Path) -> list[dict]:
-        """Full folder scan (the old list_client_sessions behavior) -- used only
-        by _rebuild_index, never on the normal read path."""
-        return [
-            self._index_entry(client_sessions_dir / name, dir_mtime)
-            for name, dir_mtime in self._listing(client_sessions_dir).items()
-        ]
-
-    def _rebuild_index(self, client_sessions_dir: Path) -> list[dict]:
-        """Full scan + persist. Called when no index exists yet, or it is
-        unreadable; a readable index is refreshed entry by entry instead
-        (see _refresh_index).
-
-        Scan and write both happen under the index lock: an unlocked scan
-        could read a stale snapshot, then overwrite a concurrent
-        _upsert_index_entry() write for an unrelated session with that
-        stale data once the lock is finally taken for the write.
-        """
-        with self._exclusive_lock(self._index_lock_path(client_sessions_dir)):
-            entries = self._scan_sessions(client_sessions_dir)
-            self._write_index(client_sessions_dir, entries)
-        return entries
-
-    def _upsert_index_entry(self, session_path_obj: Path, session_info: dict) -> None:
-        """Insert or replace one session's entry in its client's index.
-
-        Best-effort: index-write failures are logged, not raised, since the
-        index is a read-side cache and must never block the session_info.json
-        write it mirrors.
-
-        Called after that write, so the folder's mtime recorded here already
-        includes it and the next listing sees no change.
-        """
-        try:
-            client_sessions_dir = session_path_obj.parent
-            entry = dict(session_info)
-            entry.pop("session_path", None)
-            session_name = session_path_obj.name
-            entry["session_name"] = session_name
-            with contextlib.suppress(OSError):
-                entry["_dir_mtime"] = os.stat(session_path_obj).st_mtime
-            with self._exclusive_lock(self._index_lock_path(client_sessions_dir)):
-                entries = self._read_index(client_sessions_dir) or []
-                entries = [e for e in entries if e.get("session_name") != session_name]
-                entries.append(entry)
-                self._write_index(client_sessions_dir, entries)
-        except Exception:
-            logger.exception(f"Failed to update session index for {session_path_obj}")
-
     def update_session_status(self, session_path: str, status: str, manual: bool = False) -> bool:
         """Update session status in session_info.json.
 
@@ -598,28 +361,18 @@ class SessionManager:
         if session_info is None:
             raise SessionManagerError(f"Session not found: {session_path}")
 
-        try:
-            self._upsert_index_entry(Path(session_path), session_info)
-        except Exception:
-            logger.exception(f"Failed to update session index for {session_path}")
         logger.info(f"Session status updated to '{status}': {session_path}")
         return True
 
     def apply_status_updates(self, client_id: str, updates: dict) -> int:
-        """Set many sessions' statuses with a single index rewrite.
+        """Set many sessions' statuses, one session_info.json write each.
 
-        `update_session_status` rewrites the whole client index per call, so
-        applying a backlog one session at a time is O(N^2) in bytes written
-        over a UNC share. Each session_info.json still takes its own lock,
-        but the index is written once.
-
-        That lock serializes this class against itself only: Packing Tool's
-        update_session_metadata() read-modify-writes the same file without
-        taking the sidecar lock, so its packing_progress write and this
-        status write can still lose each other in the few ms between read
-        and write. Both sides re-derive on the next refresh, so the cost is
-        a stale field, not lost order data. Closing it properly means
-        teaching Packing Tool to take the same lock.
+        Each write takes its own lock. That lock serializes this class against
+        itself only: Packing Tool's update_session_metadata() read-modify-writes
+        the same file without taking the sidecar lock, so its packing_progress
+        write and this status write can still lose each other in the few ms
+        between read and write. Closing it properly means teaching Packing Tool
+        to take the same lock.
 
         Best-effort per session: one unwritable session is logged and skipped
         and the rest still apply. Never raises; a session list that will not
@@ -631,7 +384,7 @@ class SessionManager:
             return 0
 
         client_sessions_dir = self.store.local_path(self._client_rel(client_id))
-        applied = {}
+        applied = 0
 
         for session_name, status in updates.items():
             if status not in self.VALID_STATUSES:
@@ -647,8 +400,7 @@ class SessionManager:
             # Atomic: this path writes ~N files unattended (41 on the
             # first archive pass). A torn session_info.json makes
             # get_session_info return None, which drops the session
-            # out of the browser entirely and breaks Packing Tool's
-            # read of the same file. The Store writes it atomically under its lock.
+            # out of the browser entirely. The Store writes it atomically under its lock.
             try:
                 session_info = self._edit_info(
                     session_path_obj, edit, f"Failed to apply status to {session_path_obj}"
@@ -658,34 +410,10 @@ class SessionManager:
             if session_info is None:
                 logger.warning(f"Skipping missing session: {session_path_obj}")
                 continue
-            session_info["session_name"] = session_name
-            with contextlib.suppress(OSError):
-                session_info["_dir_mtime"] = os.stat(session_path_obj).st_mtime
-            applied[session_name] = session_info
+            applied += 1
 
-        if not applied:
-            return 0
-
-        # One lock, one rewrite -- the reason this method exists.
-        try:
-            with self._exclusive_lock(self._index_lock_path(client_sessions_dir)):
-                entries = self._read_index(client_sessions_dir) or []
-                entries = [e for e in entries if e.get("session_name") not in applied]
-                entries.extend(applied.values())
-                self._write_index(client_sessions_dir, entries)
-        except Exception:
-            logger.exception(f"Failed to rewrite session index for CLIENT_{client_id}")
-            # Drop the index so the next read rebuilds from disk. Without
-            # this the derive pass stops being self-limiting: the session
-            # files say "archived" while the stale index keeps serving
-            # "active", so every refresh re-derives and rewrites the same N
-            # sessions forever, and a full rebuild is the one way back that
-            # does not depend on this failing write path.
-            with contextlib.suppress(OSError):
-                (client_sessions_dir / self.INDEX_FILENAME).unlink()
-
-        logger.info(f"Applied {len(applied)} automatic status updates for CLIENT_{client_id}")
-        return len(applied)
+        logger.info(f"Applied {applied} automatic status updates for CLIENT_{client_id}")
+        return applied
 
     def restore_session_fields(self, session_path: str, fields: dict) -> bool:
         """Put stored fields back exactly: the Browse page's Undo.
@@ -724,7 +452,6 @@ class SessionManager:
         if session_info is None:
             raise SessionManagerError(f"Session not found: {session_path}")
 
-        self._upsert_index_entry(Path(session_path), session_info)
         logger.info(f"Session fields restored: {session_path}")
         return True
 
@@ -751,10 +478,6 @@ class SessionManager:
         if session_info is None:
             raise SessionManagerError(f"Session not found: {session_path}")
 
-        try:
-            self._upsert_index_entry(Path(session_path), session_info)
-        except Exception:
-            logger.exception(f"Failed to update session index for {session_path}")
         logger.info(f"Session info updated: {session_path}")
         return True
 
@@ -791,10 +514,6 @@ class SessionManager:
         if not appended:
             return False
 
-        try:
-            self._upsert_index_entry(Path(session_path), session_info)
-        except Exception:
-            logger.exception(f"Failed to update session index for {session_path}")
         logger.info(f"Session info updated: appended '{value}' to '{field}'")
         return True
 

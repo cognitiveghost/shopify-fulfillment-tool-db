@@ -396,6 +396,13 @@ class SupabaseStore(Store):
         return [r[col] for r in self._all(query)]
 
     @_guard
+    def query_sessions(self, client_id):
+        rows = self._all(lambda: self._t("sessions").select("name,info", count="exact")
+                         .eq("client_id", client_id).eq("archived", False)
+                         .not_.is_("info", "null").order("name"))
+        return [{**r["info"], "session_name": r["name"]} for r in rows]
+
+    @_guard
     def stamp(self, rel):
         r = route(rel)
         if r.kind == "blob":
