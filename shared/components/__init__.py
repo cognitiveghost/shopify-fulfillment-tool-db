@@ -8,6 +8,7 @@ from shared.components.card import Card
 from shared.components.confirm_dialog import ConfirmDialog
 from shared.components.filterbar import FilterBar
 from shared.components.overflow import OverflowMenu, overflow_button
+from shared.components.sign_in_dialog import SignInDialog
 from shared.components.statcard import StatCard
 from shared.components.state_panel import StatePanel
 from shared.components.toast import Toast, toast
@@ -17,6 +18,7 @@ __all__ = [
     "ConfirmDialog",
     "FilterBar",
     "OverflowMenu",
+    "SignInDialog",
     "StatCard",
     "StatePanel",
     "Toast",
