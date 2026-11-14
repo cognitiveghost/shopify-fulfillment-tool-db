@@ -15,6 +15,7 @@ from test_reference_tool import Pool
 from gui import barcode_tool
 from gui.barcode_tool import BarcodeTool, read_packing_lists
 from gui.tools_state import PackingList
+from shared.store import FileStore
 from shopify_tool.barcode_processor import BarcodeGenerationError
 
 
@@ -100,7 +101,8 @@ def session(tmp_path):
 def _tool(host, session=None, frame="default"):
     pool = Pool()
     held = {"frame": _analysis() if isinstance(frame, str) else frame}
-    tool = BarcodeTool(host, lambda: held["frame"], pool)
+    store = FileStore(session.parent) if session is not None else None
+    tool = BarcodeTool(host, lambda: held["frame"], lambda: store, pool)
     if session is not None:
         tool.set_session(str(session))
     return tool, pool, held
@@ -138,7 +140,7 @@ def _caught(signal):
 
 
 def test_a_list_counts_its_fulfillable_orders(session):
-    found = read_packing_lists(str(session), _analysis())
+    found = read_packing_lists(FileStore(session.parent), str(session), _analysis())
     assert [entry for entry, _orders in found] == [
         PackingList("DHL", 2, False, False),  # #4 is on the list but blocked
         PackingList("DPD", 1, False, False),
@@ -147,11 +149,11 @@ def test_a_list_counts_its_fulfillable_orders(session):
 
 
 def test_a_session_with_no_packing_lists_folder_has_none(tmp_path):
-    assert read_packing_lists(str(tmp_path), _analysis()) == []
+    assert read_packing_lists(FileStore(tmp_path), str(tmp_path), _analysis()) == []
 
 
 def test_with_no_analysis_the_lists_are_named_but_not_counted(session):
-    found = read_packing_lists(str(session), None)
+    found = read_packing_lists(FileStore(session.parent), str(session), None)
     assert [(entry.name, entry.count) for entry, _orders in found] == [("DHL", None), ("DPD", None)]
 
 
@@ -159,7 +161,7 @@ def test_a_workbook_that_cannot_be_read_is_listed_as_unreadable(session):
     (session / "packing_lists" / "Broken.xlsx").write_text("not a workbook")
     pd.DataFrame({"SKU": ["A"]}).to_excel(session / "packing_lists" / "NoOrders.xlsx", index=False)
     found = {
-        entry.name: entry for entry, _orders in read_packing_lists(str(session), _analysis())
+        entry.name: entry for entry, _orders in read_packing_lists(FileStore(session.parent), str(session), _analysis())
     }
     assert found["Broken"].count is None
     assert found["NoOrders"].count is None
@@ -168,7 +170,7 @@ def test_a_workbook_that_cannot_be_read_is_listed_as_unreadable(session):
 
 def test_excels_lock_file_is_not_a_packing_list(session):
     (session / "packing_lists" / "~$DHL.xlsx").write_text("lock")
-    names = [entry.name for entry, _orders in read_packing_lists(str(session), _analysis())]
+    names = [entry.name for entry, _orders in read_packing_lists(FileStore(session.parent), str(session), _analysis())]
     assert names == ["DHL", "DPD"]
 
 
@@ -178,7 +180,7 @@ def test_label_pdfs_on_disk_are_seen(session):
     (labels / "DHL_barcodes.pdf").write_bytes(b"%PDF")
     (labels / "DHL_qr_labels.pdf").write_bytes(b"%PDF")
     found = {
-        entry.name: entry for entry, _orders in read_packing_lists(str(session), _analysis())
+        entry.name: entry for entry, _orders in read_packing_lists(FileStore(session.parent), str(session), _analysis())
     }
     assert (found["DHL"].has_labels, found["DHL"].has_qr) == (True, True)
     assert (found["DPD"].has_labels, found["DPD"].has_qr) == (False, False)
@@ -188,20 +190,20 @@ def test_an_unchanged_workbook_is_read_once(session, monkeypatch):
     reads = []
     real = barcode_tool.packing_list_orders
 
-    def counting(path):
-        reads.append(os.path.basename(str(path)))
-        return real(path)
+    def counting(store, rel):
+        reads.append(os.path.basename(rel))
+        return real(store, rel)
 
     monkeypatch.setattr(barcode_tool, "packing_list_orders", counting)
-    read_packing_lists(str(session), _analysis())
-    read_packing_lists(str(session), _analysis())
+    read_packing_lists(FileStore(session.parent), str(session), _analysis())
+    read_packing_lists(FileStore(session.parent), str(session), _analysis())
     assert sorted(reads) == ["DHL.xlsx", "DPD.xlsx"]
 
     # A list written again is read again.
     path = _write_list(session, "DPD", ["#3", "#2"])
     os.utime(path, (path.stat().st_atime, path.stat().st_mtime + 5))
     found = {
-        entry.name: entry for entry, _orders in read_packing_lists(str(session), _analysis())
+        entry.name: entry for entry, _orders in read_packing_lists(FileStore(session.parent), str(session), _analysis())
     }
     assert reads.count("DPD.xlsx") == 2
     assert found["DPD"].count == 2
@@ -281,7 +283,7 @@ def test_with_no_analysis_the_facts_say_so(host, session):
 
 @pytest.fixture
 def share_gone(monkeypatch):
-    def gone(session_path, analysis_df):
+    def gone(store, session_path, analysis_df):
         raise OSError("share gone")
 
     monkeypatch.setattr(barcode_tool, "read_packing_lists", gone)

@@ -4,12 +4,13 @@ import time
 
 import pytest
 
+from shared.store import FileStore
 from shopify_tool.groups_manager import GroupsManager, GroupsManagerError
 
 
 @pytest.fixture
 def groups_manager(tmp_path):
-    return GroupsManager(base_path=str(tmp_path))
+    return GroupsManager(FileStore(tmp_path))
 
 
 class TestBasicCrud:
@@ -61,14 +62,14 @@ class TestConfirmedBugs:
             groups_manager.create_group("Pinned")
 
     def test_concurrent_create_group_does_not_lose_an_update(self, groups_manager, monkeypatch):
-        original_load = groups_manager.load_groups
+        original_read = groups_manager.store.read_json
 
-        def slow_load():
-            data = original_load()
+        def slow_read(rel):
+            data = original_read(rel)
             time.sleep(0.05)  # widen the read-then-write race window deterministically
             return data
 
-        monkeypatch.setattr(groups_manager, "load_groups", slow_load)
+        monkeypatch.setattr(groups_manager.store, "read_json", slow_read)
 
         results = {}
 
@@ -118,7 +119,7 @@ class TestUpdateAndDelete:
         assert groups_manager.get_group("does-not-exist") is None
 
     def test_delete_unassigns_that_groups_clients_only(self, tmp_path, profile_manager):
-        groups = GroupsManager(base_path=str(tmp_path))
+        groups = GroupsManager(FileStore(tmp_path))
         keep = groups.create_group("Keep")
         drop = groups.create_group("Drop")
         for client, group in (("AAA", drop), ("BBB", keep), ("CCC", drop)):
@@ -141,16 +142,16 @@ class TestLoadRecovery:
         assert data["groups"] == [] and set(data["special_groups"]) == {"pinned", "all"}
 
     def test_corrupt_json_is_backed_up_and_replaced_by_defaults(self, groups_manager, tmp_path):
-        path = groups_manager.groups_path
+        path = groups_manager.store.local_path("Clients/groups.json")
         path.write_text("{not json", encoding="utf-8")
         assert groups_manager.load_groups()["groups"] == []
-        assert path.with_suffix(".corrupted.bak").read_text(encoding="utf-8") == "{not json"
+        assert groups_manager.store.local_path("Clients/groups.corrupted.bak").read_text(encoding="utf-8") == "{not json"
 
     def test_a_document_without_groups_is_backed_up_and_replaced(self, groups_manager):
-        path = groups_manager.groups_path
+        path = groups_manager.store.local_path("Clients/groups.json")
         path.write_text('{"unrelated": 1}', encoding="utf-8")
         assert groups_manager.load_groups()["groups"] == []
-        assert path.with_suffix(".corrupted.bak").exists()
+        assert groups_manager.store.local_path("Clients/groups.corrupted.bak").exists()
 
     def test_a_client_that_fails_to_load_is_skipped_when_listing_a_group(self, groups_manager):
         class Profiles:
@@ -165,11 +166,9 @@ class TestLoadRecovery:
         assert groups_manager.get_clients_in_group("g1", Profiles()) == ["OK"]
 
     def test_save_failure_is_raised_as_a_groups_error(self, groups_manager, monkeypatch):
-        import shopify_tool.groups_manager as module
-
         def boom(*a, **k):
             raise PermissionError("denied")
 
-        monkeypatch.setattr(module, "atomic_write_json", boom)
+        monkeypatch.setattr("shared.store.atomic_write_json", boom)
         with pytest.raises(GroupsManagerError, match="Failed to save"):
             groups_manager.create_group("Wholesale")

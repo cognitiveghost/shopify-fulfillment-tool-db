@@ -6,12 +6,13 @@ from PySide6.QtGui import QColor
 
 import gui.groups_management_dialog as module
 from gui.groups_management_dialog import GroupsManagementDialog
+from shared.store import FileStore
 from shopify_tool.groups_manager import GroupsManager
 
 
 @pytest.fixture
 def groups(tmp_path):
-    return GroupsManager(base_path=str(tmp_path))
+    return GroupsManager(FileStore(tmp_path))
 
 
 @pytest.fixture

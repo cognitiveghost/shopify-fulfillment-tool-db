@@ -378,7 +378,7 @@ def test_opening_a_session_reads_its_lots(main_window, tmp_path, monkeypatch):
     lots = {"AAA": [{"expiry": "261230", "expiry_dt": date(2026, 12, 30), "batch": "B1", "qty": 5.0}]}
     asked = []
     monkeypatch.setattr(
-        "gui.main_window_pyside.core.session_lot_table", lambda path, _config: asked.append(path) or lots
+        "gui.main_window_pyside.core.session_lot_table", lambda _store, path, _config: asked.append(path) or lots
     )
     monkeypatch.setattr(main_window.session_manager, "get_session_info", lambda _path: {"x": 1})
     monkeypatch.setattr(main_window, "_restore_session_inputs", lambda _path: None)

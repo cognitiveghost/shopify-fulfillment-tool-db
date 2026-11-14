@@ -20,6 +20,7 @@ from blabel import LabelWriter
 from reportlab.pdfgen import canvas
 
 from gui.actions_handler import ActionsHandler
+from shared.store import FileStore
 from shopify_tool import pdf_processor, stock_export
 from shopify_tool.barcode_processor import (
     BarcodeGenerationError,
@@ -76,12 +77,15 @@ def export_totals(path):
     return e.groupby("Артикул")["Брой"].sum().to_dict()
 
 
-def handler_for(df):
+def handler_for(df, root=None):
     """ActionsHandler over a stand-in main window: the real report path
-    (XLSX + JSON for Packing Tool) with no session bookkeeping."""
+    (XLSX + JSON for Packing Tool) with no session bookkeeping. `root` is the
+    store's server root, where the reports are written."""
     mw = MagicMock()
     mw.analysis_results_df = df
     mw.session_path = None
+    if root is not None:
+        mw.profile_manager.store = FileStore(root)
     return ActionsHandler(mw)
 
 
@@ -128,13 +132,13 @@ def mapping_csv(path, rows):
 
 def test_barcode_pdf_has_a_page_for_every_label(tmp_path):
     out = generate_code128_labels_pdf(
-        [label("#1", "BOX"), label("#2", ""), label("#3", "BOX")], tmp_path / "b.pdf")
+        FileStore(tmp_path), [label("#1", "BOX"), label("#2", ""), label("#3", "BOX")], "b.pdf")
     assert pdf_pages(out) == 3
 
 
 def test_qr_pdf_has_a_page_for_every_label(tmp_path):
     out = generate_qr_labels_pdf(
-        [label("#1", "BOX"), label("#2", ""), label("#3", "BOX")], tmp_path / "q.pdf")
+        FileStore(tmp_path), [label("#1", "BOX"), label("#2", ""), label("#3", "BOX")], "q.pdf")
     assert pdf_pages(out) == 3
 
 
@@ -155,7 +159,7 @@ def test_label_pdf_with_missing_pages_is_an_error(tmp_path, monkeypatch):
     one_page.save()
     monkeypatch.setattr(LabelWriter, "write_labels", lambda *_a, **_k: buf.getvalue())
     with pytest.raises(BarcodeGenerationError):
-        generate_code128_labels_pdf([label("#1"), label("#2")], tmp_path / "b.pdf")
+        generate_code128_labels_pdf(FileStore(tmp_path), [label("#1"), label("#2")], "b.pdf")
 
 
 def test_requirements_pin_a_weasyprint_that_keeps_every_label():
@@ -170,12 +174,12 @@ def test_stock_export_write_failure_is_not_silent(tmp_path, monkeypatch):
 
     monkeypatch.setattr(stock_export, "_write_xls", locked)
     with pytest.raises(PermissionError):
-        create_stock_export(frame([("#1", "A", 1, FF)]), str(tmp_path / "e.xls"))
+        create_stock_export(FileStore(tmp_path), frame([("#1", "A", 1, FF)]), "e.xls")
 
 
 def test_regenerating_an_empty_packing_list_replaces_the_old_files(tmp_path):
     df = frame([("#1", "A", 1, FF), ("#2", "B", 2, FF)])
-    handler = handler_for(df)
+    handler = handler_for(df, tmp_path)
     handler._generate_single_report("packing_lists", packing_config(), tmp_path)
     assert (tmp_path / "packing_lists" / "ALL.json").exists()
 
@@ -191,7 +195,7 @@ def test_regenerating_an_empty_packing_list_replaces_the_old_files(tmp_path):
 
 def test_packing_list_json_excludes_the_same_skus_as_the_xlsx(tmp_path):
     df = frame([("#1", "7", 1, FF), ("#1", "B", 1, FF)])
-    handler_for(df)._generate_single_report(
+    handler_for(df, tmp_path)._generate_single_report(
         "packing_lists", packing_config(exclude_skus=["07"]), tmp_path)
     out = tmp_path / "packing_lists"
     assert json_lines(out / "ALL.json") == xlsx_lines(out / "ALL.xlsx")
@@ -208,14 +212,14 @@ def test_distinct_orders_never_share_a_barcode_value():
 
 def test_packing_list_never_lists_part_of_an_order(tmp_path):
     df = frame([("#1", "A", 1, FF), ("#1", "GIFT", 1, NF), ("#2", "C", 1, FF)])
-    create_packing_list(df, str(tmp_path / "p.xlsx"))
+    create_packing_list(FileStore(tmp_path), df, "p.xlsx")
     listed = {o for o, _ in xlsx_lines(tmp_path / "p.xlsx")}
     assert "#1" not in listed or ("#1", "GIFT") in xlsx_lines(tmp_path / "p.xlsx")
 
 
 def test_stock_export_never_writes_off_part_of_an_order(tmp_path):
     df = frame([("#1", "A", 1, FF), ("#1", "GIFT", 1, NF), ("#2", "C", 1, FF)])
-    create_stock_export(df, str(tmp_path / "e.xls"))
+    create_stock_export(FileStore(tmp_path), df, "e.xls")
     assert export_totals(tmp_path / "e.xls") == {"C": 1}
 
 
@@ -272,7 +276,7 @@ def test_unstamped_page_is_not_counted_as_matched(tmp_path, monkeypatch):
 def test_configured_columns_apply_with_lot_tracking(tmp_path):
     df = frame([("#1", "A", 2, FF)])
     df["Lot_Details"] = [[{"qty_allocated": 2, "expiry": "2027-01", "batch": "L1"}]]
-    create_packing_list(df, str(tmp_path / "p.xlsx"), columns=["Order_Number", "SKU", "Quantity"])
+    create_packing_list(FileStore(tmp_path), df, "p.xlsx", columns=["Order_Number", "SKU", "Quantity"])
     assert "Destination_Country" not in pd.read_excel(tmp_path / "p.xlsx").columns
 
 
@@ -289,7 +293,7 @@ def test_packing_list_xlsx_and_json_carry_exactly_the_fulfillable_lines(tmp_path
         ("#10", "A", 2, FF), ("#10", "B", 1, FF), ("#9", "A", 1, FF),
         ("#11", "C", 5, NF), ("#12", "A", 1, FF), ("#12", "A", 3, FF),
     ])
-    handler_for(df)._generate_single_report("packing_lists", packing_config(), tmp_path)
+    handler_for(df, tmp_path)._generate_single_report("packing_lists", packing_config(), tmp_path)
     out = tmp_path / "packing_lists"
     expected = {("#10", "A"): 2, ("#10", "B"): 1, ("#9", "A"): 1, ("#12", "A"): 4}
     assert xlsx_lines(out / "ALL.xlsx") == expected
@@ -300,7 +304,7 @@ def test_packing_list_xlsx_and_json_carry_exactly_the_fulfillable_lines(tmp_path
 
 def test_packing_list_is_in_numeric_order_number_order(tmp_path):
     df = frame([("#10", "A", 1, FF), ("#9", "A", 1, FF), ("#100", "A", 1, FF)])
-    create_packing_list(df, str(tmp_path / "p.xlsx"))
+    create_packing_list(FileStore(tmp_path), df, "p.xlsx")
     listed = pd.read_excel(tmp_path / "p.xlsx", dtype={"Order_Number": str})["Order_Number"]
     assert listed.tolist() == ["#9", "#10", "#100"]
 
@@ -312,13 +316,13 @@ def test_packing_list_lot_rows_keep_the_order_quantity(tmp_path):
         [{"qty_allocated": 1, "expiry": "2027-01", "batch": "L1"},
          {"qty_allocated": 1, "expiry": "2027-06", "batch": "L2"}],
     ]
-    create_packing_list(df, str(tmp_path / "p.xlsx"))
+    create_packing_list(FileStore(tmp_path), df, "p.xlsx")
     assert xlsx_lines(tmp_path / "p.xlsx") == {("#1", "A"): 4}
 
 
 def test_stock_export_totals_equal_fulfillable_quantities(tmp_path):
     df = frame([("#1", "A", 2, FF), ("#2", "A", 1, FF), ("#2", "B", 4, FF), ("#3", "B", 9, NF)])
-    create_stock_export(df, str(tmp_path / "e.xls"))
+    create_stock_export(FileStore(tmp_path), df, "e.xls")
     assert export_totals(tmp_path / "e.xls") == {"A": 3, "B": 4}
 
 
@@ -329,7 +333,7 @@ def test_stock_export_lot_rows_sum_to_the_allocation(tmp_path):
         [{"qty_allocated": 1, "expiry": "2027-01", "batch": "L1"},
          {"qty_allocated": 1, "expiry": "2027-06", "batch": "L2"}],
     ]
-    create_stock_export(df, str(tmp_path / "e.xls"))
+    create_stock_export(FileStore(tmp_path), df, "e.xls")
     e = pd.read_excel(tmp_path / "e.xls", dtype={"Артикул": str})
     assert e["Брой"].tolist() == [3, 1]
 

@@ -6,6 +6,7 @@ thermal printer via blabel HTML/Jinja2 templates (shopify_tool/templates/),
 label size 68mm x 38mm. See docs/superpowers/specs/2026-08-07-blabel-label-rendering-design.md.
 """
 
+import io
 import json
 import logging
 from collections.abc import Callable
@@ -17,6 +18,7 @@ import pandas as pd
 from blabel import LabelWriter
 
 from shopify_tool import label_tools
+from shopify_tool.session_state import session_rel
 
 logger = logging.getLogger(__name__)
 
@@ -41,29 +43,29 @@ class BarcodeGenerationError(BarcodeProcessorError):
     """Error during barcode generation."""
 
 
-def barcode_pdf_path(barcodes_dir: Path, list_stem: str) -> Path:
-    return Path(barcodes_dir) / f"{list_stem}_barcodes.pdf"
+def barcodes_rel(store, session_path, list_stem: str) -> str:
+    """Store path of the folder holding a packing list's label PDFs."""
+    return f"{session_rel(store, session_path)}/barcodes/{list_stem}"
 
 
-def qr_pdf_path(barcodes_dir: Path, list_stem: str) -> Path:
-    return Path(barcodes_dir) / f"{list_stem}_qr_labels.pdf"
+def barcode_pdf_rel(folder_rel: str, list_stem: str) -> str:
+    return f"{folder_rel}/{list_stem}_barcodes.pdf"
 
 
-def barcodes_dir(session_path, list_stem: str) -> Path:
-    """The folder holding a packing list's label PDFs."""
-    return Path(session_path) / "barcodes" / list_stem
+def qr_pdf_rel(folder_rel: str, list_stem: str) -> str:
+    return f"{folder_rel}/{list_stem}_qr_labels.pdf"
 
 
-def invalidate_label_pdfs(session_path, list_stem: str) -> list[Path]:
+def invalidate_label_pdfs(store, session_path, list_stem: str) -> list[str]:
     """Deletes a packing list's barcode and QR label PDFs. Called whenever
     the list is regenerated: a PDF left from before could label orders the
     new list no longer holds (AUDIT-04-12)."""
-    folder = barcodes_dir(session_path, list_stem)
+    folder = barcodes_rel(store, session_path, list_stem)
     removed = []
-    for path in (barcode_pdf_path(folder, list_stem), qr_pdf_path(folder, list_stem)):
-        if path.exists():
-            path.unlink()
-            removed.append(path)
+    for rel in (barcode_pdf_rel(folder, list_stem), qr_pdf_rel(folder, list_stem)):
+        if store.exists(rel):
+            store.delete(rel)
+            removed.append(rel)
     return removed
 
 
@@ -288,7 +290,7 @@ def _check_page_count(pdf_bytes: bytes, expected: int) -> None:
         raise BarcodeGenerationError(f"Label PDF has {pages} pages for {expected} labels")
 
 
-def generate_code128_labels_pdf(orders: list[dict[str, Any]], output_pdf: Path) -> Path:
+def generate_code128_labels_pdf(store, orders: list[dict[str, Any]], output_rel: str) -> str:
     """
     Render one Code-128 label per order as a single multi-page PDF.
 
@@ -296,10 +298,11 @@ def generate_code128_labels_pdf(orders: list[dict[str, Any]], output_pdf: Path) 
         orders: List of dicts as produced by generate_barcodes_batch()'s
             successful results: safe_order_number, sequential_num, courier,
             country, tag, item_count.
-        output_pdf: Output PDF path.
+        store: Store the PDF is written to.
+        output_rel: Store path of the output PDF.
 
     Returns:
-        Path to the generated PDF (same as output_pdf).
+        Local path of the generated PDF, for display and for opening.
 
     Raises:
         ValueError: If orders is empty.
@@ -331,16 +334,16 @@ def generate_code128_labels_pdf(orders: list[dict[str, Any]], output_pdf: Path) 
         )
         pdf_bytes = writer.write_labels(records, target="@memory")
         _check_page_count(pdf_bytes, len(records))
-        output_pdf.parent.mkdir(parents=True, exist_ok=True)
-        output_pdf.write_bytes(pdf_bytes)
+        store.write_bytes(output_rel, pdf_bytes)
     except Exception as e:
         raise BarcodeGenerationError(f"Failed to generate barcode labels PDF: {e}") from e
 
-    logger.info(f"Generated PDF: {output_pdf} ({len(records)} pages)")
-    return output_pdf
+    local = str(store.local_path(output_rel))
+    logger.info(f"Generated PDF: {local} ({len(records)} pages)")
+    return local
 
 
-def generate_qr_labels_pdf(orders: list[dict[str, Any]], output_pdf: Path) -> Path:
+def generate_qr_labels_pdf(store, orders: list[dict[str, Any]], output_rel: str) -> str:
     """
     Render one QR label per order as a single multi-page PDF.
 
@@ -349,10 +352,11 @@ def generate_qr_labels_pdf(orders: list[dict[str, Any]], output_pdf: Path) -> Pa
             successful results -- same shape generate_code128_labels_pdf()
             takes: safe_order_number, sequential_num, courier, country, tag,
             item_count. The QR code encodes the order number only.
-        output_pdf: Output PDF path.
+        store: Store the PDF is written to.
+        output_rel: Store path of the output PDF.
 
     Returns:
-        Path to the generated PDF (same as output_pdf).
+        Local path of the generated PDF, for display and for opening.
 
     Raises:
         ValueError: If orders is empty.
@@ -384,26 +388,26 @@ def generate_qr_labels_pdf(orders: list[dict[str, Any]], output_pdf: Path) -> Pa
         )
         pdf_bytes = writer.write_labels(records, target="@memory")
         _check_page_count(pdf_bytes, len(records))
-        output_pdf.parent.mkdir(parents=True, exist_ok=True)
-        output_pdf.write_bytes(pdf_bytes)
+        store.write_bytes(output_rel, pdf_bytes)
     except Exception as e:
         raise BarcodeGenerationError(f"Failed to generate QR labels PDF: {e}") from e
 
-    logger.info(f"Generated QR labels PDF: {output_pdf} ({len(records)} pages)")
-    return output_pdf
+    local = str(store.local_path(output_rel))
+    logger.info(f"Generated QR labels PDF: {local} ({len(records)} pages)")
+    return local
 
 
 # === ONE PACKING LIST, START TO FINISH ===
 
-def packing_list_orders(xlsx_path) -> frozenset:
+def packing_list_orders(store, rel: str) -> frozenset:
     """The order numbers a packing list workbook holds, as pandas reads them.
 
     Raises:
         ValueError: If the sheet has no Order_Number column.
     """
-    frame = pd.read_excel(xlsx_path)
+    frame = pd.read_excel(io.BytesIO(store.read_bytes(rel)))
     if "Order_Number" not in frame.columns:
-        raise ValueError(f"Packing list has no Order_Number column: {xlsx_path}")
+        raise ValueError(f"Packing list has no Order_Number column: {rel}")
     return frozenset(frame["Order_Number"].dropna().unique())
 
 
@@ -412,8 +416,9 @@ def _writing(count: int, kind: str) -> str:
 
 
 def generate_list_labels(
+    store,
     orders_df: pd.DataFrame,
-    folder,
+    folder: str,
     list_stem: str,
     *,
     qr: bool = False,
@@ -427,9 +432,10 @@ def generate_list_labels(
     render; a render is a single WeasyPrint call and reports nothing itself.
 
     Args:
+        store: Store the PDFs are written to.
         orders_df: The Fulfillable rows of the orders on this list, one row
             per order line (Order_Number, Quantity, Shipping_Provider, ...).
-        folder: Where the PDFs go (barcodes_dir(session, list_stem)).
+        folder: Store path of the folder the PDFs go in (barcodes_rel(...)).
         list_stem: The packing list's name; it names the PDFs.
 
     Returns:
@@ -468,10 +474,9 @@ def generate_list_labels(
 
     results = generate_barcodes_batch(df=unique_orders)
     successful = [r for r in results if r["success"]]
-    folder = Path(folder)
     outcome: dict[str, Any] = {
         "list": list_stem,
-        "folder": str(folder),
+        "folder": str(store.local_path(folder)),
         "labels": len(successful),
         "failed": len(results) - len(successful),
         "pdf": None,
@@ -488,16 +493,16 @@ def generate_list_labels(
 
     if progress:
         progress(_writing(len(successful), "barcode"))
-    outcome["pdf"] = str(
-        generate_code128_labels_pdf(successful, barcode_pdf_path(folder, list_stem))
+    outcome["pdf"] = generate_code128_labels_pdf(
+        store, successful, barcode_pdf_rel(folder, list_stem)
     )
 
     if qr:
         if progress:
             progress(_writing(len(successful), "QR"))
         try:
-            outcome["qr_pdf"] = str(
-                generate_qr_labels_pdf(successful, qr_pdf_path(folder, list_stem))
+            outcome["qr_pdf"] = generate_qr_labels_pdf(
+                store, successful, qr_pdf_rel(folder, list_stem)
             )
         except Exception:
             logger.exception("QR labels PDF generation failed")

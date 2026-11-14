@@ -4,6 +4,7 @@ import zipfile
 
 import pandas as pd
 
+from shared.store import FileStore
 from shopify_tool.packing_lists import create_packing_list
 
 
@@ -29,7 +30,7 @@ class TestFilteringAndExclusion:
             {"Order_Number": "#2", "SKU": "A2", "Order_Fulfillment_Status": "Not Fulfillable"},
         ])
         out = tmp_path / "list.xlsx"
-        create_packing_list(df, str(out))
+        create_packing_list(FileStore(out.parent), df, out.name)
         result = _read_output(out)
         assert list(result["Order_Number"]) == ["#1"]
 
@@ -39,7 +40,7 @@ class TestFilteringAndExclusion:
             {"Order_Number": "#2", "SKU": "A2", "Shipping_Provider": "DPD"},
         ])
         out = tmp_path / "dhl_only.xlsx"
-        create_packing_list(df, str(out), filters=[{"field": "Shipping_Provider", "operator": "==", "value": "DHL"}])
+        create_packing_list(FileStore(out.parent), df, out.name, filters=[{"field": "Shipping_Provider", "operator": "==", "value": "DHL"}])
         result = _read_output(out)
         assert list(result["Order_Number"]) == ["#1"]
 
@@ -49,14 +50,14 @@ class TestFilteringAndExclusion:
             {"Order_Number": "#1", "SKU": "A2"},
         ])
         out = tmp_path / "excl.xlsx"
-        create_packing_list(df, str(out), exclude_skus=["7"])  # "7" should match SKU "07"
+        create_packing_list(FileStore(out.parent), df, out.name, exclude_skus=["7"])  # "7" should match SKU "07"
         result = _read_output(out)
         assert list(result["SKU"]) == ["A2"]
 
     def test_no_matching_rows_does_not_create_file(self, tmp_path):
         df = _analysis_df([{"Order_Number": "#1", "SKU": "A1", "Order_Fulfillment_Status": "Not Fulfillable"}])
         out = tmp_path / "empty.xlsx"
-        create_packing_list(df, str(out))
+        create_packing_list(FileStore(out.parent), df, out.name)
         assert not out.exists()
 
 
@@ -69,7 +70,7 @@ class TestSortOrder:
             {"Order_Number": "#1", "SKU": "Y", "Shipping_Provider": "PostOne"},
         ])
         out = tmp_path / "sorted.xlsx"
-        create_packing_list(df, str(out))
+        create_packing_list(FileStore(out.parent), df, out.name)
         result = _read_output(out)
         # DHL (priority 0) rows first, sorted by numeric order# then SKU;
         # then PostOne (1); DPD (2) last -- NOT insertion order, NOT lexicographic "#10" < "#9".
@@ -85,7 +86,7 @@ class TestDestinationCountryDedup:
             {"Order_Number": "#1", "SKU": "A2", "Destination_Country": "DE"},
         ])
         out = tmp_path / "dedup.xlsx"
-        create_packing_list(df, str(out))
+        create_packing_list(FileStore(out.parent), df, out.name)
         result = _read_output(out)
         country_col = result.columns[0]  # first column = Destination_Country (renamed header)
         values = result[country_col].fillna("").tolist()
@@ -98,7 +99,7 @@ class TestWarehouseNameFallback:
         df = _analysis_df([{"Order_Number": "#1", "SKU": "A1", "Product_Name": "Fallback Name"}])
         df = df.drop(columns=["Warehouse_Name"])
         out = tmp_path / "fallback.xlsx"
-        create_packing_list(df, str(out))
+        create_packing_list(FileStore(out.parent), df, out.name)
         result = _read_output(out)
         # Warehouse_Name column header is renamed to the output filename per the
         # export's metadata-embedding scheme -- assert by position instead.
@@ -114,7 +115,7 @@ class TestLotExpansion:
         ]
         df = _analysis_df([{"Order_Number": "#1", "SKU": "A1", "Quantity": 5, "Lot_Details": lot_details}])
         out = tmp_path / "lots.xlsx"
-        create_packing_list(df, str(out))
+        create_packing_list(FileStore(out.parent), df, out.name)
         result = _read_output(out)
         assert len(result) == 2
         assert result["Quantity"].sum() == 5
@@ -124,7 +125,7 @@ class TestLotExpansion:
         lot_details = [{"expiry": "1", "batch": "1", "qty_allocated": 4}]
         df = _analysis_df([{"Order_Number": "#1", "SKU": "A1", "Quantity": 4, "Lot_Details": lot_details}])
         out = tmp_path / "sentinel.xlsx"
-        create_packing_list(df, str(out))
+        create_packing_list(FileStore(out.parent), df, out.name)
         result = _read_output(out)
         assert result.iloc[0]["Lot_Expiry"] in ("", None) or pd.isna(result.iloc[0]["Lot_Expiry"])
         assert result.iloc[0]["Lot_Batch"] in ("", None) or pd.isna(result.iloc[0]["Lot_Batch"])
@@ -133,7 +134,7 @@ class TestLotExpansion:
         lots = [{"expiry": "260601", "batch": None, "qty_allocated": 3}]
         df = _analysis_df([{"Order_Number": "#1", "SKU": "A1", "Quantity": 1, "Lot_Details": lots}])
         out = tmp_path / "stale.xlsx"
-        create_packing_list(df, str(out))
+        create_packing_list(FileStore(out.parent), df, out.name)
         assert _read_output(out)["Quantity"].tolist() == [1]
 
     def test_two_skus_sharing_one_list_object_print_their_own_quantity(self, tmp_path):
@@ -143,7 +144,7 @@ class TestLotExpansion:
             {"Order_Number": "#1221", "SKU": "S", "Quantity": 1, "Lot_Details": lots},
         ])
         out = tmp_path / "shared.xlsx"
-        create_packing_list(df, str(out))
+        create_packing_list(FileStore(out.parent), df, out.name)
         result = _read_output(out)
         assert dict(zip(result["SKU"], result["Quantity"])) == {"L": 1, "S": 1}
 
@@ -155,7 +156,7 @@ class TestLotExpansion:
              "Lot_Details": [{"expiry": "260601", "batch": None, "qty_allocated": 1}]},
         ])
         out = tmp_path / "dups.xlsx"
-        create_packing_list(df, str(out))
+        create_packing_list(FileStore(out.parent), df, out.name)
         result = _read_output(out)
         assert result.loc[result["SKU"] == "A1", "Quantity"].tolist() == [1, 2]
 
@@ -170,7 +171,7 @@ def test_repeat_column_in_lot_layout_marks_first_row_only(tmp_path):
         {"Order_Number": "#2", "SKU": "A2", "Quantity": 1, "System_note": ""},
     ])
     out = tmp_path / "lots_repeat.xlsx"
-    create_packing_list(df, str(out))
+    create_packing_list(FileStore(out.parent), df, out.name)
     sheet = pd.read_excel(out, dtype=str).fillna("")
     cols = list(sheet.columns)
     assert cols.index("Repeat") == cols.index("Order_Number") + 1
@@ -184,7 +185,7 @@ def test_repeat_column_without_lots_marks_every_order_once(tmp_path):
         {"Order_Number": "#2", "SKU": "A3"},
     ])
     out = tmp_path / "repeat.xlsx"
-    create_packing_list(df, str(out))
+    create_packing_list(FileStore(out.parent), df, out.name)
     sheet = pd.read_excel(out, dtype=str).fillna("")
     assert sheet["Repeat"].tolist() == ["Repeat", "", ""]
 
@@ -192,15 +193,15 @@ def test_repeat_column_without_lots_marks_every_order_once(tmp_path):
 def test_blocked_reason_note_is_not_a_repeat(tmp_path):
     df = _analysis_df([{"Order_Number": "#1", "System_note": "Cannot fulfill: Repeat SKU short"}])
     out = tmp_path / "blocked.xlsx"
-    create_packing_list(df, str(out))
+    create_packing_list(FileStore(out.parent), df, out.name)
     assert pd.read_excel(out, dtype=str).fillna("")["Repeat"].tolist() == [""]
 
 
 def test_custom_column_set_prints_repeat_only_when_asked(tmp_path):
     df = _analysis_df([{"Order_Number": "#1", "System_note": "Repeat"}])
     plain, asked = tmp_path / "plain.xlsx", tmp_path / "asked.xlsx"
-    create_packing_list(df, str(plain), columns=["Order_Number", "SKU"])
-    create_packing_list(df, str(asked), columns=["Order_Number", "Repeat"])
+    create_packing_list(FileStore(plain.parent), df, plain.name, columns=["Order_Number", "SKU"])
+    create_packing_list(FileStore(asked.parent), df, asked.name, columns=["Order_Number", "Repeat"])
     assert "Repeat" not in pd.read_excel(plain).columns
     assert pd.read_excel(asked, dtype=str)["Repeat"].tolist() == ["Repeat"]
 
@@ -224,7 +225,7 @@ def test_not_in_filter_excludes_the_listed_skus(tmp_path):
     })
     out = tmp_path / "notin.xlsx"
 
-    create_packing_list(df, str(out), "notin",
+    create_packing_list(FileStore(out.parent), df, out.name, "notin",
                         filters=[{"field": "SKU", "operator": "not in", "value": "AB-01,CD-02"}])
 
     written = pd.read_excel(out)
@@ -246,7 +247,7 @@ def test_contains_filter_writes_the_matching_row(tmp_path):
     })
     out = tmp_path / "contains.xlsx"
 
-    create_packing_list(df, str(out), "contains",
+    create_packing_list(FileStore(out.parent), df, out.name, "contains",
                         filters=[{"field": "SKU", "operator": "contains", "value": "AB"}])
 
     assert pd.read_excel(out)["SKU"].tolist() == ["AB-01"]
@@ -268,7 +269,7 @@ def _three_row_df():
 def test_columns_none_reproduces_the_default_layout(tmp_path):
     """The guard against regressing every existing packing list."""
     out = tmp_path / "default.xlsx"
-    create_packing_list(_three_row_df(), str(out), "default")
+    create_packing_list(FileStore(out.parent), _three_row_df(), out.name, "default")
 
     written = pd.read_excel(out)
     # Shipping_Provider and Warehouse_Name are renamed to carry the timestamp
@@ -279,7 +280,7 @@ def test_columns_none_reproduces_the_default_layout(tmp_path):
 
 def test_chosen_columns_appear_in_the_chosen_order(tmp_path):
     out = tmp_path / "custom.xlsx"
-    create_packing_list(_three_row_df(), str(out), "custom",
+    create_packing_list(FileStore(out.parent), _three_row_df(), out.name, "custom",
                         columns=["SKU", "Quantity", "Order_Number"])
 
     written = pd.read_excel(out)
@@ -291,7 +292,7 @@ def test_column_set_without_order_number_still_writes(tmp_path):
     """Order boundaries drive the row borders and used to be read off the
     printed frame, so deselecting Order_Number raised KeyError."""
     out = tmp_path / "no_order_col.xlsx"
-    create_packing_list(_three_row_df(), str(out), "no_order_col",
+    create_packing_list(FileStore(out.parent), _three_row_df(), out.name, "no_order_col",
                         columns=["SKU", "Quantity"])
 
     written = pd.read_excel(out)
@@ -304,7 +305,7 @@ def test_metadata_survives_a_column_set_that_drops_the_carrier_columns(tmp_path)
     Warehouse_Name. With neither selected they must still reach the sheet --
     they move to the Excel print header."""
     out = tmp_path / "no_carriers.xlsx"
-    create_packing_list(_three_row_df(), str(out), "no_carriers",
+    create_packing_list(FileStore(out.parent), _three_row_df(), out.name, "no_carriers",
                         columns=["SKU", "Quantity"])
 
     written = pd.read_excel(out)

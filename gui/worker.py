@@ -1,7 +1,13 @@
+import functools
 import sys
 import traceback
 
-from PySide6.QtCore import QObject, QRunnable, Signal, Slot
+from PySide6.QtCore import QObject, QRunnable, QTimer, Signal, Slot
+
+# Every Worker, held until its `finished` reaches the GUI thread. A caller's
+# bare local is collected the moment it returns, which deletes the unparented
+# WorkerSignals while run() is still going ("Signal source has been deleted").
+_alive: dict[int, Worker] = {}
 
 
 class WorkerSignals(QObject):
@@ -49,6 +55,13 @@ class Worker(QRunnable):
         self.args = args
         self.kwargs = kwargs
         self.signals = WorkerSignals()
+        _alive[id(self)] = self
+        # Let go one event-loop turn later, so the caller's own `finished`
+        # slots (connected after this one) are delivered first. A partial over
+        # the id, not a lambda over self, or the worker would hold itself.
+        self.signals.finished.connect(
+            functools.partial(QTimer.singleShot, 0, functools.partial(_alive.pop, id(self), None))
+        )
 
     @Slot()
     def run(self):

@@ -24,6 +24,7 @@ from audit_support import (  # noqa: F401  pytest fixtures, used by name
 
 from gui.actions_handler import ActionsHandler
 from gui.selection_helper import SelectionHelper
+from shared.store import FileStore
 from shopify_tool import core, stock_ledger
 from shopify_tool.analysis import run_analysis, toggle_order_fulfillment
 from shopify_tool.set_decoder import decode_sets_in_orders, import_sets_from_csv
@@ -169,11 +170,12 @@ def test_an_excel_csv_with_a_bom_imports(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def _packing_list_handler(df):
+def _packing_list_handler(df, root):
     mw = Mock()
     mw.analysis_results_df = df
     mw.session_path = None
     mw._list_fingerprints = {}  # the main window's dict (main_window_pyside.py)
+    mw.profile_manager.store = FileStore(root)
     return ActionsHandler(mw)
 
 
@@ -186,7 +188,7 @@ def test_AUDIT_09_O5_the_packing_list_json_is_written_atomically(tmp_path, in_pl
     )
     in_place = in_place_writes("ALL.json")
 
-    _packing_list_handler(df)._generate_single_report(
+    _packing_list_handler(df, tmp_path)._generate_single_report(
         "packing_lists", {"name": "ALL", "output_filename": "ALL.xlsx", "filters": []}, tmp_path
     )
 

@@ -16,6 +16,7 @@ from PySide6.QtCore import QThreadPool
 
 from gui.actions_handler import ActionsHandler
 from gui.selection_helper import SelectionHelper
+from shared.store import FileStore
 from shopify_tool import core
 
 
@@ -145,7 +146,7 @@ def test_on_analysis_complete_toasts_a_history_warning(monkeypatch, tmp_path, st
         session_path=None,
         current_client_id="M",
         active_profile_config={},
-        profile_manager=SimpleNamespace(base_path=tmp_path),
+        profile_manager=SimpleNamespace(base_path=tmp_path, store=FileStore(tmp_path)),
         threadpool=QThreadPool(),
         log_activity=Mock(),
         update_ui_state=Mock(),
@@ -168,7 +169,7 @@ def test_a_state_save_warning_is_toasted(monkeypatch, tmp_path):
         session_path=None,
         current_client_id="M",
         active_profile_config={},
-        profile_manager=SimpleNamespace(base_path=tmp_path),
+        profile_manager=SimpleNamespace(base_path=tmp_path, store=FileStore(tmp_path)),
         threadpool=QThreadPool(),
         log_activity=Mock(),
         update_ui_state=Mock(),
@@ -188,13 +189,13 @@ def test_on_analysis_complete_reads_the_sessions_lots(monkeypatch, tmp_path):
     monkeypatch.setattr("gui.actions_handler.toast", Mock())
     monkeypatch.setattr("shared.stats_manager.StatsManager.record_analysis", Mock())
     lots = {"A": []}
-    monkeypatch.setattr("gui.actions_handler.core.session_lot_table", lambda path, _config: lots)
+    monkeypatch.setattr("gui.actions_handler.core.session_lot_table", lambda _store, path, _config: lots)
     df = pd.DataFrame([{"Order_Number": "1001", "Order_Fulfillment_Status": "Fulfillable"}])
     mw = SimpleNamespace(
         session_path=None,
         current_client_id="M",
         active_profile_config={},
-        profile_manager=SimpleNamespace(base_path=tmp_path),
+        profile_manager=SimpleNamespace(base_path=tmp_path, store=FileStore(tmp_path)),
         threadpool=QThreadPool(),
         log_activity=Mock(),
         update_ui_state=Mock(),
@@ -241,7 +242,7 @@ def test_on_analysis_complete_does_not_block_ui_thread_on_stats_recording(
         session_path=str(tmp_path / "session_1"),
         current_client_id="M",
         active_profile_config={},
-        profile_manager=SimpleNamespace(base_path=tmp_path),
+        profile_manager=SimpleNamespace(base_path=tmp_path, store=FileStore(tmp_path)),
         threadpool=QThreadPool(),
         log_activity=Mock(),
         update_ui_state=Mock(),

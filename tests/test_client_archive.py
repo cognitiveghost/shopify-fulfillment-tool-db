@@ -4,7 +4,6 @@ import json
 
 import pytest
 
-from shopify_tool import profile_manager as pm_module
 from shopify_tool.profile_manager import ProfileManagerError
 
 
@@ -62,7 +61,7 @@ def test_a_client_rename_refused_reads_open_on_another_pc(profile_manager, monke
     def refuse(src, dst):
         raise PermissionError("in use")
 
-    monkeypatch.setattr(pm_module.os, "rename", refuse)
+    monkeypatch.setattr(pm.store, "move", refuse)
     with pytest.raises(ProfileManagerError, match="open on another PC"):
         pm.archive_client(cid)
 
@@ -71,14 +70,14 @@ def test_a_failed_sessions_move_puts_the_client_back(profile_manager, monkeypatc
     pm = profile_manager
     cid = _make(pm)
     _session(pm, cid)
-    real = pm_module.os.rename
+    real = pm.store.move
 
     def flaky(src, dst):
         if "Sessions" in str(src) and "_archive" in str(dst):
             raise PermissionError("in use")
         return real(src, dst)
 
-    monkeypatch.setattr(pm_module.os, "rename", flaky)
+    monkeypatch.setattr(pm.store, "move", flaky)
     with pytest.raises(ProfileManagerError, match="open on another PC"):
         pm.archive_client(cid)
     assert (pm.clients_dir / "CLIENT_ACME").is_dir()

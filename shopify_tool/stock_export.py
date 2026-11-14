@@ -1,14 +1,14 @@
 import io
 import logging
-import os
 import re
-import tempfile
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pandas as pd
 
+from shared.store import Store
 from shopify_tool.report_filters import apply_report_filters, fulfillable_only
+from shopify_tool.session_state import session_rel
 from shopify_tool.stock_ledger import lot_parts
 
 logger = logging.getLogger("ShopifyToolLogger")
@@ -151,7 +151,7 @@ def _check_totals(filtered_items: pd.DataFrame, export_df: pd.DataFrame) -> None
         raise ValueError("Stock export does not match the order lines: " + "; ".join(wrong))
 
 
-def _write_xls(export_df, output_file) -> None:
+def _write_xls(store: Store, export_df, output_rel: str) -> None:
     """One sheet, header row, then the rows. The warehouse system reads the
     first sheet of the file and nothing else, which is why a separate
     write-off goes in a separate file rather than a second sheet."""
@@ -168,78 +168,65 @@ def _write_xls(export_df, output_file) -> None:
             sheet.write(row_num + 1, col_num, value)
     buf = io.BytesIO()
     workbook.save(buf)
-    # Temp file + replace: a write that fails part-way (the share drops, the
+    # One atomic store write: a write that fails part-way (the share drops, the
     # ERP holds the file) never leaves a half-written export to import.
     try:
-        fd, tmp = tempfile.mkstemp(
-            dir=os.path.dirname(os.path.abspath(output_file)), prefix=".", suffix=".xls.tmp"
-        )
+        store.write_bytes(output_rel, buf.getvalue())
     except PermissionError as e:
-        raise PermissionError(e.errno, e.strerror, output_file) from e
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(buf.getvalue())
-        os.replace(tmp, output_file)
-    except BaseException as e:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        if isinstance(e, PermissionError):
-            # Name the export, not the temp file, in the "close it" message
-            raise PermissionError(e.errno, e.strerror, output_file) from e
-        raise
+        # Name the export, not the store's temp file, in the "close it" message
+        raise PermissionError(e.errno, e.strerror, str(store.local_path(output_rel))) from e
 
 
 _DATESTAMP_SUFFIX = re.compile(r"_\d{4}-\d{2}-\d{2}$")
 
 
-def prepare_export_path(base_path, now=None):
+def prepare_export_path(store: Store, base_rel: str, now=None) -> str:
     """The file a new export of this report goes to: <stem>_YYYY-MM-DD_HHMM.xls
     beside the configured name. Every earlier version of the same report,
     and its packaging file, is moved to old/ first, so the folder only ever
     holds one current export and importing it can't write stock off twice.
     A move that fails (the ERP holds the file) raises, and nothing new is
     written."""
-    base = Path(base_path)
+    base = PurePosixPath(base_rel)
     stem = _DATESTAMP_SUFFIX.sub("", base.stem)
     stamp = (now or datetime.now().astimezone()).strftime("%Y-%m-%d_%H%M")
     earlier = re.compile(
         rf"^{re.escape(stem)}(_\d{{4}}-\d{{2}}-\d{{2}}(_\d{{4}})?)?(_packaging)?\.xls$",
         re.IGNORECASE,
     )
-    if base.parent.is_dir():
-        versions = [p for p in base.parent.iterdir() if p.is_file() and earlier.match(p.name)]
-        if versions:
-            old = base.parent / "old"
-            old.mkdir(exist_ok=True)
-            for p in versions:
-                os.replace(p, _free_name(old / p.name))
-                logger.info(f"Moved earlier export {p.name} to old/")
+    folder = base.parent.as_posix()
+    versions = [n for n in store.list_dir(folder) if earlier.match(n)]
+    for name in versions:
+        store.move(f"{folder}/{name}", _free_name(store, f"{folder}/old/{name}"))
+        logger.info(f"Moved earlier export {name} to old/")
     return str(base.with_name(f"{stem}_{stamp}.xls"))
 
 
-def _free_name(target: Path) -> Path:
+def _free_name(store: Store, target: str) -> str:
     """`target`, or <stem>_2.xls, _3, ... when a copy of that name is already there.
 
     A same-minute re-export would otherwise overwrite the copy already in old/
     (AUDIT-09-O8). The stamp stays as it is, so the ERP sees the same names.
     """
+    p = PurePosixPath(target)
     n = 1
     candidate = target
-    while candidate.exists():
+    while store.exists(candidate):
         n += 1
-        candidate = target.with_name(f"{target.stem}_{n}{target.suffix}")
+        candidate = str(p.with_name(f"{p.stem}_{n}{p.suffix}"))
     return candidate
 
 
-def _packaging_path(output_file):
+def _packaging_path(output_rel: str) -> str:
     """Sibling of the product export: export.xls -> export_packaging.xls."""
-    p = Path(output_file)
+    p = PurePosixPath(output_rel)
     return str(p.with_name(f"{p.stem}_packaging{p.suffix}"))
 
 
 def create_stock_export(
+    store: Store,
     analysis_df,
-    output_file,
+    output_rel,
     report_name="Stock Export",
     filters=None,
     writeoff_mode="off",
@@ -266,7 +253,8 @@ def create_stock_export(
     Args:
         analysis_df (pd.DataFrame): The main DataFrame from the fulfillment
             analysis.
-        output_file (str): The full path where the new .xls file will be saved.
+        store (Store): Where the new .xls file is written.
+        output_rel (str): The store path where the new .xls file will be saved.
         report_name (str, optional): The name of the report, used for logging.
             Defaults to "Stock Export".
         filters (list[dict], optional): A list of dictionaries defining filter
@@ -280,9 +268,9 @@ def create_stock_export(
             define which packaging SKUs to add for each tag.
 
     Returns:
-        str | None: the packaging file's path when "separate" mode actually
-        wrote one, so the caller can name it alongside `output_file` — it is
-        the only path the caller does not already hold. None otherwise.
+        str | None: the packaging file's local path when "separate" mode
+        actually wrote one, so the caller can name it alongside the export: it
+        is the only path the caller does not already hold. None otherwise.
 
     Raises:
         Exception: any failure (a locked or unreachable file, bad data)
@@ -392,26 +380,26 @@ def create_stock_export(
         # Guard against any path that bypassed _finalize_export_df
         export_df = _finalize_export_df(export_df)
 
-        _write_xls(export_df, output_file)
+        _write_xls(store, export_df, output_rel)
         logger.info(
-            f"Stock export '{report_name}' created successfully at '{output_file}'."
+            f"Stock export '{report_name}' created successfully at '{output_rel}'."
         )
 
         # Only now, with the export the caller actually asked for safely on
         # disk: a failure writing the packaging file (the ERP holding it open,
         # a permission on the share) must not cost them the product export too.
-        packaging_file = _packaging_path(output_file)
+        packaging_file = _packaging_path(output_rel)
         if packaging_rows is None:
             # A packaging file from an earlier "separate" run must not sit
             # beside this export: importing the folder would write that
             # packaging off a second time. prepare_export_path already moves
             # stamped ones to old/; this covers callers passing a fixed name.
-            Path(packaging_file).unlink(missing_ok=True)
+            store.delete(packaging_file)
             return None
 
-        _write_xls(packaging_rows, packaging_file)
+        _write_xls(store, packaging_rows, packaging_file)
         logger.info(f"Wrote {len(packaging_rows)} packaging SKUs to '{packaging_file}'")
-        return packaging_file
+        return str(store.local_path(packaging_file))
 
     except Exception:
         logger.exception(f"Error while creating stock export '{report_name}'")
@@ -419,7 +407,7 @@ def create_stock_export(
 
 
 def merge_session_stock_exports(
-    session_paths: list, client_id: str = ""
+    store: Store, session_paths: list, client_id: str = ""
 ) -> pd.DataFrame:
     """Merge fulfillable order quantities from multiple sessions.
 
@@ -436,48 +424,46 @@ def merge_session_stock_exports(
         DataFrame with the canonical export layout (:data:`STOCK_EXPORT_COLUMNS`),
         summed across all sessions and sorted by Артикул.
     """
-    from pathlib import Path
-
     all_dfs = []
     for session_path in session_paths:
-        session_path = Path(session_path)
-        analysis_dir = session_path / "analysis"
-        pkl_file = analysis_dir / "current_state.pkl"
+        name = Path(session_path).name
+        analysis_dir = f"{session_rel(store, session_path)}/analysis"
+        pkl_rel = f"{analysis_dir}/current_state.pkl"
         # Not current_state.xlsx: it is no longer written, and an old one can
         # be older than the session's run (AUDIT-07-H2).
-        xlsx_file = analysis_dir / "fulfillment_analysis.xlsx"
+        xlsx_rel = f"{analysis_dir}/fulfillment_analysis.xlsx"
 
         df = None
-        if pkl_file.exists():
+        if store.exists(pkl_rel):
             try:
-                df = pd.read_pickle(pkl_file)
+                df = pd.read_pickle(io.BytesIO(store.read_bytes(pkl_rel)))
             except Exception as e:
                 logger.warning(
-                    f"[merge_stock client={client_id}] pkl unreadable in {session_path.name}, trying xlsx: {e}"
+                    f"[merge_stock client={client_id}] pkl unreadable in {name}, trying xlsx: {e}"
                 )
 
-        if df is None and xlsx_file.exists():
+        if df is None and store.exists(xlsx_rel):
             try:
-                df = pd.read_excel(xlsx_file)
+                df = pd.read_excel(io.BytesIO(store.read_bytes(xlsx_rel)))
             except Exception as e:
-                logger.warning(f"Could not read {xlsx_file}: {e}")
+                logger.warning(f"Could not read {xlsx_rel}: {e}")
 
         if df is None:
             logger.warning(
-                f"[merge_stock client={client_id}] No readable state file in {session_path.name}/analysis"
+                f"[merge_stock client={client_id}] No readable state file in {name}/analysis"
             )
             continue
 
         if "Order_Fulfillment_Status" not in df.columns:
             logger.warning(
-                f"[merge_stock client={client_id}] No Order_Fulfillment_Status in {session_path.name}"
+                f"[merge_stock client={client_id}] No Order_Fulfillment_Status in {name}"
             )
             continue
 
         fulfillable = fulfillable_only(df).copy()
         all_dfs.append(fulfillable)
         logger.info(
-            f"[merge_stock client={client_id}] {len(fulfillable)} fulfillable rows from {session_path.name}"
+            f"[merge_stock client={client_id}] {len(fulfillable)} fulfillable rows from {name}"
         )
 
     if not all_dfs:

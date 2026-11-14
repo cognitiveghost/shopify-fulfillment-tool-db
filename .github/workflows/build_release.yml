@@ -46,6 +46,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
+      - name: Set up Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: 3.1.0
+      - name: Start local Supabase stack
+        # Real Postgres for the @pytest.mark.supabase tests and the pgTAP suite.
+        run: |
+          supabase start
+          supabase test db
+          supabase status -o env | sed -e 's/^API_URL=/SUPABASE_TEST_URL=/' -e 's/^ANON_KEY=/SUPABASE_TEST_ANON_KEY=/' -e 's/^SERVICE_ROLE_KEY=/SUPABASE_TEST_SERVICE_KEY=/' | tr -d '"' | grep '^SUPABASE_TEST_' >> "$GITHUB_ENV"
       - name: Lint (ruff)
         # No --exclude shared: this repo owns shared/ (ADR 0017).
         run: ruff check .

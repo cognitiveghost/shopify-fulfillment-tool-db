@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
+from shared.store import FileStore
 from shopify_tool.undo_manager import UndoManager
 
 
@@ -132,6 +133,7 @@ def _window(df, session_path=None):
         session_path=session_path,
         current_client_id="TEST",
         active_profile_config={"settings": {}},
+        profile_manager=SimpleNamespace(store=FileStore(session_path or ".")),
     )
     window.selection_helper = SelectionHelper(main_window=window)
     window.undo_manager = UndoManager(window)
@@ -230,7 +232,7 @@ def test_a_whole_row_record_from_an_older_build_still_undoes(tmp_path):
 def test_the_undo_file_is_written_by_the_queue(tmp_path, qapp):
     mw = _window(UNDO_FRAME.copy(), session_path=str(tmp_path))
     mw.write_queue = SessionWriteQueue()
-    history = mw.undo_manager._get_history_path()
+    history = mw.profile_manager.store.local_path(mw.undo_manager._get_history_path())
     gate = gated(mw.write_queue)
     try:
         mw.undo_manager.record_operation("toggle_status", "t", {"order_number": "#1"}, UNDO_FRAME.iloc[:1])
@@ -254,7 +256,7 @@ def test_two_pcs_keep_their_own_undo_history(tmp_path, monkeypatch):
     monkeypatch.setenv("COMPUTERNAME", "PC-A")
     a.undo_manager.reload_session_history()
     assert [op["description"] for op in a.undo_manager.operations] == ["by A"]
-    assert a.undo_manager._get_history_path().name == "operations_history_PC-A.json"
+    assert a.undo_manager._get_history_path().rsplit("/", 1)[-1] == "operations_history_PC-A.json"
 
 
 def test_a_legacy_shared_history_still_loads(tmp_path, monkeypatch):

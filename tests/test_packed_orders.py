@@ -1,16 +1,22 @@
 import json
 import os
+from pathlib import Path
 
 import pandas as pd
 
+from shared.store import FileStore
 from shopify_tool.packed_orders import load_session_signals, union_history_with_packed
 
 
 class _FakeProfileManager:
-    """Minimal stand-in exposing only what load_session_signals uses."""
+    """Minimal stand-in exposing only what load_session_signals uses.
 
-    def __init__(self, sessions_root):
-        self._sessions_root = sessions_root
+    Sessions live under <base>/Sessions, as ProfileManager lays them out.
+    """
+
+    def __init__(self, base):
+        self.store = FileStore(base)
+        self._sessions_root = Path(base) / "Sessions"
 
     def get_sessions_root(self):
         return self._sessions_root
@@ -24,7 +30,7 @@ def _write_sessions(tmp_path, client_id, entries):
     Packing Tool writes session_info.json and nothing else, so a test that
     seeds the index proves nothing about whether its writes are visible.
     """
-    client_dir = tmp_path / f"CLIENT_{client_id}"
+    client_dir = tmp_path / "Sessions" / f"CLIENT_{client_id}"
     client_dir.mkdir(parents=True, exist_ok=True)
     for entry in entries:
         session_dir = client_dir / entry["session_name"]
@@ -235,7 +241,7 @@ class TestLoadPackedOrders:
                 "L": {"updated_at": "2026-07-01T10:00:00+00:00",
                       "completed_orders": ["#A"]}}},
         ])
-        (tmp_path / "CLIENT_ALMADERM" / "session_index.json").write_text(
+        (tmp_path / "Sessions" / "CLIENT_ALMADERM" / "session_index.json").write_text(
             "{not json", encoding="utf-8"
         )
 
@@ -272,7 +278,7 @@ class TestStaleIndexIsRefreshed:
                 "L": {"updated_at": "2026-07-01T10:00:00+00:00",
                       "completed_orders": ["#A"]}}},
         ])
-        client_dir = tmp_path / "CLIENT_ALMADERM"
+        client_dir = tmp_path / "Sessions" / "CLIENT_ALMADERM"
         # The index as it looked before Packing Tool packed anything: same
         # session, same count, no packing_progress.
         index_path = client_dir / "session_index.json"

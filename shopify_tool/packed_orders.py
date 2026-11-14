@@ -69,7 +69,9 @@ def load_session_signals(profile_manager, client_id: str) -> tuple[pd.DataFrame,
 
 
 def _load_session_signals(profile_manager, client_id: str) -> tuple[pd.DataFrame, set[str] | None]:
-    return signals_from_entries(SessionManager(profile_manager).list_client_sessions(client_id))
+    return signals_from_entries(
+        SessionManager(profile_manager, profile_manager.store).list_client_sessions(client_id)
+    )
 
 
 def signals_from_entries(entries: list) -> tuple[pd.DataFrame, set[str] | None]:

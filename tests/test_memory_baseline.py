@@ -7,6 +7,7 @@ reader and the history location are replaced.
 import pandas as pd
 import pytest
 
+from shared.store import FileStore
 from shopify_tool import core, fulfillment_history
 
 MAPPINGS = {
@@ -25,6 +26,7 @@ class MemoryProfile:
 
     def __init__(self, client_dir, skus):
         self.client_dir = client_dir
+        self.store = FileStore(client_dir)
         self.memory = {"enabled": True, "skus": dict(skus), "names": {}}
 
     def get_inventory_memory(self, _cid):
@@ -107,7 +109,7 @@ def test_a_cancelled_memory_run_does_not_stop_the_next_run_updating_memory(
 
     assert run(pm, [("#1", "A", 2)], progress=_cancel_at(index)) == core.CANCELLED
 
-    assert core.read_memory_baseline(tmp_path / "S1") is None
+    assert core.read_memory_baseline(FileStore(tmp_path), tmp_path / "S1") is None
     assert pm.memory == {"enabled": True, "skus": {"A": 10.0}, "names": {}, "session": "S0"}
     run(pm, [("#1", "A", 2)])
     assert pm.memory["skus"] == {"A": 8.0}
@@ -135,7 +137,7 @@ def test_cancelling_a_rerun_keeps_the_baseline_the_first_run_wrote(tmp_path, run
 
     run(pm, [("#1", "A", 2)], progress=_cancel_at(2))
 
-    assert core.read_memory_baseline(tmp_path / "S1")["skus"] == {"A": 10.0}
+    assert core.read_memory_baseline(FileStore(tmp_path), tmp_path / "S1")["skus"] == {"A": 10.0}
     run(pm, [("#1", "A", 2)])
     assert pm.memory["skus"] == {"A": 8.0}
 
@@ -152,7 +154,7 @@ def test_memory_mode_rerun_of_same_session_draws_once(tmp_path, run):
 def test_stock_file_run_writes_summed_baseline(tmp_path, run):
     pm = MemoryProfile(tmp_path, {"A": 99.0})
     run(pm, [("#1", "A", 1)], stock_rows=[("A", 3), ("A", 4)])
-    assert core.read_memory_baseline(tmp_path / "S1")["skus"] == {"A": 7.0}
+    assert core.read_memory_baseline(FileStore(tmp_path), tmp_path / "S1")["skus"] == {"A": 7.0}
     assert pm.memory["skus"] == {"A": 6.0}
 
 

@@ -10,6 +10,7 @@ pins that last one -- it is the case that shipped wrong picking lists.
 import pandas as pd
 import pytest
 
+from shared.store import FileStore
 from shopify_tool.report_filters import (
     apply_report_filters,
     count_matches,
@@ -194,7 +195,7 @@ def test_preview_and_writer_agree_on_the_same_config(tmp_path):
     )
 
     out = tmp_path / "agree.xlsx"
-    create_packing_list(df, str(out), "agree", filters=filters)
+    create_packing_list(FileStore(out.parent), df, out.name, "agree", filters=filters)
     written_skus = sorted(pd.read_excel(out)["SKU"].tolist())
 
     assert preview_skus == written_skus == ["EF-03"]

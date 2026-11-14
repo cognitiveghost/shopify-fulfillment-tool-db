@@ -6,6 +6,7 @@ import pandas as pd
 
 from gui.main_window_pyside import MainWindow
 from shared.atomic_write import atomic_write_json
+from shared.store import FileStore
 from shopify_tool import fulfillment_history
 
 
@@ -19,7 +20,7 @@ def _mw(tmp_path, df):
         _state_stamp=None,
         session_manager=None,
         current_client_id="X",
-        profile_manager=SimpleNamespace(get_client_directory=lambda _c: tmp_path),
+        profile_manager=SimpleNamespace(get_client_directory=lambda _c: tmp_path, store=FileStore(tmp_path)),
         active_profile_config={"inventory_memory": {"enabled": False}},
     )
 
@@ -40,7 +41,7 @@ def _df(status):
 def test_save_session_state_records_this_sessions_orders(tmp_path):
     mw = _mw(tmp_path, _df("Fulfillable"))
     MainWindow.save_session_state(mw)
-    h = fulfillment_history.load(tmp_path / "fulfillment_history.csv")
+    h = fulfillment_history.load(FileStore(tmp_path), "fulfillment_history.csv")
     assert h[["Order_Number", "Session"]].values.tolist() == [["#1", "2026-09-25_1"]]
 
 
@@ -50,6 +51,7 @@ def _memory_mw(tmp_path, owner):
     mw.active_profile_config = {"inventory_memory": {"enabled": True}}
     mw.profile_manager = SimpleNamespace(
         get_client_directory=lambda _c: tmp_path,
+        store=FileStore(tmp_path),
         get_inventory_memory=lambda _c: {"enabled": True, "session": owner},
         save_inventory_memory=Mock(return_value=True),
     )

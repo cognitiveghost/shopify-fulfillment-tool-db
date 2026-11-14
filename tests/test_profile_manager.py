@@ -164,14 +164,14 @@ class TestLoadClientConfigCaching:
         profile_manager.create_client_profile("M", "Client")
         first = profile_manager.load_client_config("M")
         call_count = {"n": 0}
-        original_open = open
+        original_read = profile_manager.store.read_json
 
-        def counting_open(*args, **kwargs):
-            if "client_config.json" in str(args[0]):
+        def counting_read(rel):
+            if "client_config.json" in rel:
                 call_count["n"] += 1
-            return original_open(*args, **kwargs)
+            return original_read(rel)
 
-        monkeypatch.setattr("builtins.open", counting_open)
+        monkeypatch.setattr(profile_manager.store, "read_json", counting_read)
         second = profile_manager.load_client_config("M")
         assert second == first
         assert call_count["n"] == 0  # served from cache, file not reopened
@@ -238,14 +238,14 @@ class TestLoadShopifyConfigCaching:
         profile_manager.load_shopify_config("M")  # runs migrations, caches (or not)
 
         reads = []
-        real_open = open
+        real_read = profile_manager.store.read_json
 
-        def counting_open(path, *a, **k):
-            if str(path).endswith("shopify_config.json"):
-                reads.append(path)
-            return real_open(path, *a, **k)
+        def counting_read(rel):
+            if rel.endswith("shopify_config.json"):
+                reads.append(rel)
+            return real_read(rel)
 
-        monkeypatch.setattr("builtins.open", counting_open)
+        monkeypatch.setattr(profile_manager.store, "read_json", counting_read)
         profile_manager.load_shopify_config("M")
         assert reads == [], "second load re-read the file instead of using the cache"
 
@@ -297,9 +297,7 @@ class TestMigrationThatCannotSave:
         def locked_by_another_pc(path, *_args, **_kwargs):
             raise PermissionError(13, "being used by another process", str(path))
 
-        monkeypatch.setattr(
-            "shopify_tool.profile_manager.atomic_write_json", locked_by_another_pc
-        )
+        monkeypatch.setattr(profile_manager.store, "write_json", locked_by_another_pc)
         first = profile_manager.load_shopify_config("M")
         assert "weight_config" in first  # migrated in memory
         assert "weight_config" not in json.loads(config_path.read_text(encoding="utf-8"))
@@ -462,7 +460,7 @@ class TestMetadata:
         root = profile_manager.sessions_dir / "CLIENT_ACME"
         for name in ("2026-10-01_1", "2026-10-05_2", "2026-10-05_10", "scratch"):
             (root / name).mkdir(parents=True)
-        (root / "2026-10-09_1").write_text("a file, not a session", encoding="utf-8")
+        (root / "2026-10-09_1.json").write_text("a file, not a session", encoding="utf-8")  # the Store has no is_dir: files are told by extension
         meta = profile_manager.calculate_metadata("ACME", force_refresh=True)
         assert meta["total_sessions"] == 3
         assert meta["last_session_date"] == "2026-10-05"

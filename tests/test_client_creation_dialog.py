@@ -6,13 +6,14 @@ from PySide6.QtWidgets import QDialog
 
 import gui.client_settings_dialog as module
 from gui.client_settings_dialog import ClientCreationDialog
+from shared.store import FileStore
 from shopify_tool.groups_manager import GroupsManager
 from shopify_tool.profile_manager import ProfileManagerError
 
 
 @pytest.fixture
 def groups(tmp_path):
-    manager = GroupsManager(base_path=str(tmp_path))
+    manager = GroupsManager(FileStore(tmp_path))
     manager.create_group("Wholesale")
     return manager
 

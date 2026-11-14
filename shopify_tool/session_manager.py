@@ -28,12 +28,20 @@ from pathlib import Path
 from typing import ClassVar
 
 from shared.atomic_write import atomic_write_json
+from shared.store import Store, StoreNotFound
+from shopify_tool.session_state import session_rel
 
 logger = logging.getLogger("ShopifyToolLogger")
+
+SESSIONS = "Sessions"
 
 
 class SessionManagerError(Exception):
     """Base exception for SessionManager errors."""
+
+
+class _SessionMissing(Exception):
+    """Raised inside an edit when the session has no session_info.json."""
 
 
 class SessionManager:
@@ -47,7 +55,8 @@ class SessionManager:
     - Updating session status
 
     Attributes:
-        profile_manager: ProfileManager instance for accessing paths
+        profile_manager: ProfileManager instance for client checks and metadata cache
+        store: Store holding the Sessions/ tree
     """
 
     # Session subdirectories
@@ -66,16 +75,21 @@ class SessionManager:
     # Per-client session index cache filename (see docs/superpowers/specs/2026-07-27-ui-responsiveness-design.md)
     INDEX_FILENAME: ClassVar[str] = "session_index.json"
 
-    def __init__(self, profile_manager):
-        """Initialize SessionManager with ProfileManager.
+    def __init__(self, profile_manager, store: Store):
+        """Initialize SessionManager.
 
         Args:
-            profile_manager: ProfileManager instance for accessing file server paths
+            profile_manager: ProfileManager, for client checks and the metadata cache
+            store: Store holding the Sessions/ tree
         """
         self.profile_manager = profile_manager
-        self.sessions_root = profile_manager.get_sessions_root()
+        self.store = store
 
         logger.info("SessionManager initialized")
+
+    @staticmethod
+    def _client_rel(client_id: str) -> str:
+        return f"{SESSIONS}/CLIENT_{client_id.upper()}"
 
     def create_session(self, client_id: str) -> str:
         """Create a new session for a client.
@@ -102,28 +116,25 @@ class SessionManager:
         if not self.profile_manager.client_exists(client_id):
             raise SessionManagerError(f"Client does not exist: CLIENT_{client_id}")
 
-        client_sessions_dir = self.sessions_root / f"CLIENT_{client_id}"
-        client_sessions_dir.mkdir(parents=True, exist_ok=True)
+        client_rel = self._client_rel(client_id)
 
-        # mkdir without exist_ok is the claim. Two PCs can derive one name
-        # from a stale listing (SMB caches it ~10 s) and only one mkdir wins;
+        # claim_dir is the claim. Two PCs can derive one name
+        # from a stale listing (SMB caches it ~10 s) and only one claim wins;
         # the loser takes the next number rather than touching that folder
         # (AUDIT-05-1). Counting on from the name, not re-listing, because
         # the listing is what was stale.
         date, _, number = self._generate_unique_session_name(
-            client_sessions_dir
+            client_rel
         ).rpartition("_")
         for n in range(int(number), int(number) + 10):
-            session_path = client_sessions_dir / f"{date}_{n}"
-            try:
-                session_path.mkdir()
+            rel = f"{client_rel}/{date}_{n}"
+            if self.store.claim_dir(rel):
                 break
-            except FileExistsError:
-                continue
         else:
             raise SessionManagerError(
                 f"No free session name for CLIENT_{client_id} on {date}"
             )
+        session_path = self.store.local_path(rel)
         session_name = session_path.name
 
         # Past this point the folder is ours, so the cleanup below can only
@@ -131,7 +142,8 @@ class SessionManager:
         try:
             # Create subdirectories
             for subdir in self.SESSION_SUBDIRS:
-                (session_path / subdir).mkdir()
+                if not self.store.claim_dir(f"{rel}/{subdir}"):
+                    raise FileExistsError(f"{rel}/{subdir}")
 
             # Create session_info.json
             session_info = {
@@ -156,8 +168,7 @@ class SessionManager:
                 "last_modified": datetime.now().astimezone().isoformat()
             }
 
-            session_info_path = session_path / "session_info.json"
-            atomic_write_json(session_info_path, session_info, indent=2)
+            self.store.write_json(f"{rel}/session_info.json", session_info)
 
             try:
                 self._upsert_index_entry(session_path, session_info)
@@ -171,30 +182,29 @@ class SessionManager:
         except Exception as e:
             logger.exception("Failed to create session")
             # Cleanup on failure
-            if session_path.exists():
-                import shutil
-                shutil.rmtree(session_path, ignore_errors=True)
+            with contextlib.suppress(Exception):
+                self.store.delete(rel)
             raise SessionManagerError(f"Failed to create session: {e}")
 
-    def _generate_unique_session_name(self, client_sessions_dir: Path) -> str:
+    def _generate_unique_session_name(self, client_rel: str) -> str:
         """Generate unique session name with format {YYYY-MM-DD_N}.
 
         Finds the next available number for today's date.
 
         Args:
-            client_sessions_dir (Path): Client's sessions directory
+            client_rel (str): Store path of the client's sessions folder
 
         Returns:
             str: Unique session name (e.g., "2025-11-05_1")
         """
         today = datetime.now().astimezone().strftime("%Y-%m-%d")
 
-        # Find existing sessions for today
-        existing_sessions = []
-        if client_sessions_dir.exists():
-            for item in client_sessions_dir.iterdir():
-                if item.is_dir() and item.name.startswith(today):
-                    existing_sessions.append(item.name)
+        # Find existing sessions for today; session folders have no dot, files do
+        existing_sessions = [
+            name
+            for name in self.store.list_dir(client_rel)
+            if name.startswith(today) and "." not in name
+        ]
 
         # Find next available number
         if not existing_sessions:
@@ -227,8 +237,7 @@ class SessionManager:
         Returns:
             Path: Full path to session directory
         """
-        client_id = client_id.upper()
-        return self.sessions_root / f"CLIENT_{client_id}" / session_name
+        return self.store.local_path(f"{self._client_rel(client_id)}/{session_name}")
 
     def list_client_sessions(
         self,
@@ -251,10 +260,11 @@ class SessionManager:
                 Each dict contains session metadata including session_name, status, created_at
         """
         client_id = client_id.upper()
-        client_sessions_dir = self.sessions_root / f"CLIENT_{client_id}"
+        client_rel = self._client_rel(client_id)
 
-        if not client_sessions_dir.exists():
+        if not self.store.exists(client_rel):
             return []
+        client_sessions_dir = self.store.local_path(client_rel)
 
         entries = self._read_index(client_sessions_dir)
         try:
@@ -310,11 +320,50 @@ class SessionManager:
                     import fcntl
                     fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
-    @contextlib.contextmanager
-    def _locked_session_info(self, session_path_obj: Path):
-        """Blocking exclusive lock spanning a session_info.json read-modify-write."""
-        with self._exclusive_lock(session_path_obj / "session_info.json.lock"):
-            yield
+    def _info_rel(self, session_path) -> str:
+        return f"{session_rel(self.store, session_path)}/session_info.json"
+
+    def _normalised(self, session_info: dict, session_path) -> dict:
+        """Add the fields get_session_info gives: session_path, statistics, comments."""
+        # Add full path to info
+        session_info["session_path"] = str(Path(session_path))
+
+        # Calculate statistics if missing (backwards compatibility)
+        if "statistics" not in session_info:
+            session_info["statistics"] = self.calculate_session_statistics(session_path)
+
+        # Ensure comments field exists
+        if "comments" not in session_info:
+            session_info["comments"] = ""
+
+        return session_info
+
+    def _edit_info(self, session_path, edit, failed: str) -> dict | None:
+        """Read-modify-write session_info.json under its lock.
+
+        `edit` gets the session's info as get_session_info sees it and returns
+        the dict to write. Returns the dict written, or None when the session
+        has no session_info.json. Any other failure is logged under `failed`
+        and raised as SessionManagerError.
+        """
+
+        def change(raw):
+            if raw is None:
+                raise _SessionMissing()
+            info = edit(self._normalised(raw, session_path))
+            info.pop("session_path", None)  # computed, never stored
+            return info
+
+        folder = session_rel(self.store, session_path)
+        if not self.store.exists(folder):
+            return None  # update_json would re-create a deleted folder
+        try:
+            return self.store.update_json(f"{folder}/session_info.json", change)
+        except _SessionMissing:
+            return None
+        except Exception as e:
+            logger.exception(failed)
+            raise SessionManagerError(f"{failed}: {e}") from e
 
     def get_session_info(self, session_path: str) -> dict | None:
         """Load session metadata from session_info.json.
@@ -325,30 +374,12 @@ class SessionManager:
         Returns:
             Optional[Dict]: Session info dictionary or None if not found/invalid
         """
-        session_path_obj = Path(session_path)
-        session_info_path = session_path_obj / "session_info.json"
-
-        if not session_info_path.exists():
+        try:
+            session_info = self.store.read_json(self._info_rel(session_path))
+            return self._normalised(session_info, session_path)
+        except StoreNotFound:
             logger.warning(f"Session info not found: {session_path}")
             return None
-
-        try:
-            with open(session_info_path, 'r', encoding='utf-8') as f:
-                session_info = json.load(f)
-
-            # Add full path to info
-            session_info["session_path"] = str(session_path_obj)
-
-            # Calculate statistics if missing (backwards compatibility)
-            if "statistics" not in session_info:
-                session_info["statistics"] = self.calculate_session_statistics(session_path)
-
-            # Ensure comments field exists
-            if "comments" not in session_info:
-                session_info["comments"] = ""
-
-            return session_info
-
         except Exception:
             logger.exception("Failed to load session info")
             return None
@@ -556,38 +587,23 @@ class SessionManager:
                 f"Invalid status: {status}. Must be one of {self.VALID_STATUSES}"
             )
 
-        session_path_obj = Path(session_path)
-
-        with self._locked_session_info(session_path_obj):
-            session_info = self.get_session_info(session_path)
-            if not session_info:
-                raise SessionManagerError(f"Session not found: {session_path}")
-
-            # Update status
-            session_info["status"] = status
-            session_info["status_updated_at"] = datetime.now().astimezone().isoformat()
+        def edit(info):
+            info["status"] = status
+            info["status_updated_at"] = datetime.now().astimezone().isoformat()
             if manual:
-                session_info["status_manually_set"] = True
+                info["status_manually_set"] = True
+            return info
 
-            # Save back
-            session_info_path = session_path_obj / "session_info.json"
+        session_info = self._edit_info(session_path, edit, "Failed to update session status")
+        if session_info is None:
+            raise SessionManagerError(f"Session not found: {session_path}")
 
-            try:
-                # Remove computed fields
-                session_info.pop("session_path", None)
-
-                atomic_write_json(session_info_path, session_info, indent=2)
-
-                try:
-                    self._upsert_index_entry(session_path_obj, session_info)
-                except Exception:
-                    logger.exception(f"Failed to update session index for {session_path_obj}")
-                logger.info(f"Session status updated to '{status}': {session_path}")
-                return True
-
-            except Exception as e:
-                logger.exception("Failed to update session status")
-                raise SessionManagerError(f"Failed to update session status: {e}")
+        try:
+            self._upsert_index_entry(Path(session_path), session_info)
+        except Exception:
+            logger.exception(f"Failed to update session index for {session_path}")
+        logger.info(f"Session status updated to '{status}': {session_path}")
+        return True
 
     def apply_status_updates(self, client_id: str, updates: dict) -> int:
         """Set many sessions' statuses with a single index rewrite.
@@ -614,7 +630,7 @@ class SessionManager:
         if not updates:
             return 0
 
-        client_sessions_dir = self.sessions_root / f"CLIENT_{client_id.upper()}"
+        client_sessions_dir = self.store.local_path(self._client_rel(client_id))
         applied = {}
 
         for session_name, status in updates.items():
@@ -622,27 +638,30 @@ class SessionManager:
                 logger.warning(f"Skipping invalid status '{status}' for {session_name}")
                 continue
             session_path_obj = client_sessions_dir / session_name
+
+            def edit(info, status=status):
+                info["status"] = status
+                info["status_updated_at"] = datetime.now().astimezone().isoformat()
+                return info
+
+            # Atomic: this path writes ~N files unattended (41 on the
+            # first archive pass). A torn session_info.json makes
+            # get_session_info return None, which drops the session
+            # out of the browser entirely and breaks Packing Tool's
+            # read of the same file. The Store writes it atomically under its lock.
             try:
-                with self._locked_session_info(session_path_obj):
-                    session_info = self.get_session_info(str(session_path_obj))
-                    if not session_info:
-                        logger.warning(f"Skipping missing session: {session_path_obj}")
-                        continue
-                    session_info["status"] = status
-                    session_info["status_updated_at"] = datetime.now().astimezone().isoformat()
-                    session_info.pop("session_path", None)
-                    # Atomic: this path writes ~N files unattended (41 on the
-                    # first archive pass). A torn session_info.json makes
-                    # get_session_info return None, which drops the session
-                    # out of the browser entirely and breaks Packing Tool's
-                    # read of the same file.
-                    atomic_write_json(session_path_obj / "session_info.json", session_info, indent=2)
-                    session_info["session_name"] = session_name
-                    with contextlib.suppress(OSError):
-                        session_info["_dir_mtime"] = os.stat(session_path_obj).st_mtime
-                applied[session_name] = session_info
-            except Exception:
-                logger.exception(f"Failed to apply status to {session_path_obj}")
+                session_info = self._edit_info(
+                    session_path_obj, edit, f"Failed to apply status to {session_path_obj}"
+                )
+            except SessionManagerError:
+                continue  # already logged
+            if session_info is None:
+                logger.warning(f"Skipping missing session: {session_path_obj}")
+                continue
+            session_info["session_name"] = session_name
+            with contextlib.suppress(OSError):
+                session_info["_dir_mtime"] = os.stat(session_path_obj).st_mtime
+            applied[session_name] = session_info
 
         if not applied:
             return 0
@@ -693,34 +712,21 @@ class SessionManager:
                 f"Invalid status: {status}. Must be one of {self.VALID_STATUSES}"
             )
 
-        session_path_obj = Path(session_path)
-
-        with self._locked_session_info(session_path_obj):
-            session_info = self.get_session_info(session_path)
-            if not session_info:
-                raise SessionManagerError(f"Session not found: {session_path}")
-
+        def edit(info):
             for key, value in fields.items():
                 if value is None:
-                    session_info.pop(key, None)
+                    info.pop(key, None)
                 else:
-                    session_info[key] = value
+                    info[key] = value
+            return info
 
-            try:
-                # Remove computed fields
-                session_info.pop("session_path", None)
+        session_info = self._edit_info(session_path, edit, "Failed to restore session fields")
+        if session_info is None:
+            raise SessionManagerError(f"Session not found: {session_path}")
 
-                atomic_write_json(
-                    session_path_obj / "session_info.json", session_info, indent=2
-                )
-                self._upsert_index_entry(session_path_obj, session_info)
-                logger.info(f"Session fields restored: {session_path}")
-                return True
-
-            except Exception as e:
-                logger.exception("Failed to restore session fields")
-                raise SessionManagerError(f"Failed to restore session fields: {e}")
-
+        self._upsert_index_entry(Path(session_path), session_info)
+        logger.info(f"Session fields restored: {session_path}")
+        return True
 
     def update_session_info(self, session_path: str, updates: dict) -> bool:
         """Update session metadata with arbitrary fields.
@@ -735,36 +741,22 @@ class SessionManager:
         Raises:
             SessionManagerError: If update fails
         """
-        session_path_obj = Path(session_path)
-
-        with self._locked_session_info(session_path_obj):
-            session_info = self.get_session_info(session_path)
-            if not session_info:
-                raise SessionManagerError(f"Session not found: {session_path}")
-
+        def edit(info):
             # Apply updates
-            session_info.update(updates)
-            session_info["last_updated"] = datetime.now().astimezone().isoformat()
+            info.update(updates)
+            info["last_updated"] = datetime.now().astimezone().isoformat()
+            return info
 
-            # Save back
-            session_info_path = session_path_obj / "session_info.json"
+        session_info = self._edit_info(session_path, edit, "Failed to update session info")
+        if session_info is None:
+            raise SessionManagerError(f"Session not found: {session_path}")
 
-            try:
-                # Remove computed fields
-                session_info.pop("session_path", None)
-
-                atomic_write_json(session_info_path, session_info, indent=2)
-
-                try:
-                    self._upsert_index_entry(session_path_obj, session_info)
-                except Exception:
-                    logger.exception(f"Failed to update session index for {session_path_obj}")
-                logger.info(f"Session info updated: {session_path}")
-                return True
-
-            except Exception as e:
-                logger.exception("Failed to update session info")
-                raise SessionManagerError(f"Failed to update session info: {e}")
+        try:
+            self._upsert_index_entry(Path(session_path), session_info)
+        except Exception:
+            logger.exception(f"Failed to update session index for {session_path}")
+        logger.info(f"Session info updated: {session_path}")
+        return True
 
     def append_to_session_list(self, session_path: str, field: str, value) -> bool:
         """Atomically append value to a list field in session_info.json.
@@ -781,36 +773,30 @@ class SessionManager:
         Returns:
             bool: True if value was appended, False if it was already present
         """
-        session_path_obj = Path(session_path)
+        appended = False
 
-        with self._locked_session_info(session_path_obj):
-            session_info = self.get_session_info(session_path)
-            if not session_info:
-                raise SessionManagerError(f"Session not found: {session_path}")
-
-            current_list = session_info.get(field, [])
+        def edit(info):
+            nonlocal appended
+            current_list = info.get(field, [])
             if value in current_list:
-                return False
+                return info  # written back unchanged; see the caller below
+            appended = True
+            info[field] = current_list + [value]
+            info["last_updated"] = datetime.now().astimezone().isoformat()
+            return info
 
-            session_info[field] = current_list + [value]
-            session_info["last_updated"] = datetime.now().astimezone().isoformat()
+        session_info = self._edit_info(session_path, edit, "Failed to update session info")
+        if session_info is None:
+            raise SessionManagerError(f"Session not found: {session_path}")
+        if not appended:
+            return False
 
-            session_info_path = session_path_obj / "session_info.json"
-            try:
-                session_info.pop("session_path", None)
-
-                atomic_write_json(session_info_path, session_info, indent=2)
-
-                try:
-                    self._upsert_index_entry(session_path_obj, session_info)
-                except Exception:
-                    logger.exception(f"Failed to update session index for {session_path_obj}")
-                logger.info(f"Session info updated: appended '{value}' to '{field}'")
-                return True
-
-            except Exception as e:
-                logger.exception("Failed to update session info")
-                raise SessionManagerError(f"Failed to update session info: {e}")
+        try:
+            self._upsert_index_entry(Path(session_path), session_info)
+        except Exception:
+            logger.exception(f"Failed to update session index for {session_path}")
+        logger.info(f"Session info updated: appended '{value}' to '{field}'")
+        return True
 
     def get_session_subdirectory(self, session_path: str, subdir_name: str) -> Path:
         """Get path to a session subdirectory.
@@ -831,12 +817,12 @@ class SessionManager:
                 f"Must be one of {self.SESSION_SUBDIRS}"
             )
 
-        subdir_path = Path(session_path) / subdir_name
+        rel = f"{session_rel(self.store, session_path)}/{subdir_name}"
 
-        if not subdir_path.exists():
-            raise SessionManagerError(f"Subdirectory not found: {subdir_path}")
+        if not self.store.exists(rel):
+            raise SessionManagerError(f"Subdirectory not found: {self.store.local_path(rel)}")
 
-        return subdir_path
+        return self.store.local_path(rel)
 
     def get_input_dir(self, session_path: str) -> Path:
         """Get path to session input directory."""
@@ -884,7 +870,7 @@ class SessionManager:
             >>> sm.get_barcodes_dir("Sessions/CLIENT_M/2026-01-16_1")
             Path("Sessions/CLIENT_M/2026-01-16_1/barcodes")
         """
-        return Path(session_path) / "barcodes"
+        return self.store.local_path(f"{session_rel(self.store, session_path)}/barcodes")
 
     def get_packing_list_barcode_dir(self, session_path: str, packing_list_name: str) -> Path:
         """
@@ -928,8 +914,7 @@ class SessionManager:
         Returns:
             bool: True if session exists
         """
-        session_path = self.get_session_path(client_id, session_name)
-        return session_path.exists() and session_path.is_dir()
+        return self.store.exists(f"{self._client_rel(client_id)}/{session_name}")
 
     def delete_session(self, session_path: str) -> bool:
         """Delete a session directory.
@@ -948,19 +933,19 @@ class SessionManager:
         session_path_obj = Path(session_path).resolve()
 
         try:
-            session_path_obj.relative_to(self.sessions_root.resolve())
+            inside = session_path_obj.relative_to(self.store.local_path(SESSIONS).resolve())
         except ValueError:
             raise SessionManagerError(
                 f"Refusing to delete path outside sessions root: {session_path}"
             )
+        rel = f"{SESSIONS}/{inside.as_posix()}"
 
-        if not session_path_obj.exists():
+        if not self.store.exists(rel):
             logger.warning(f"Session not found for deletion: {session_path}")
             return False
 
         try:
-            import shutil
-            shutil.rmtree(session_path_obj)
+            self.store.delete(rel)
             logger.info(f"Session deleted: {session_path}")
             return True
 
@@ -985,7 +970,6 @@ class SessionManager:
                 "packing_lists": list[str]
             }
         """
-        session_path_obj = Path(session_path)
         statistics = {
             "total_orders": 0,
             "total_items": 0,
@@ -994,13 +978,12 @@ class SessionManager:
         }
 
         try:
+            rel = session_rel(self.store, session_path)
             # Try to read analysis_data.json for orders/items count
-            analysis_dir = session_path_obj / "analysis"
-            analysis_data_path = analysis_dir / "analysis_data.json"
+            analysis_data_rel = f"{rel}/analysis/analysis_data.json"
 
-            if analysis_data_path.exists():
-                with open(analysis_data_path, 'r', encoding='utf-8') as f:
-                    analysis_data = json.load(f)
+            if self.store.exists(analysis_data_rel):
+                analysis_data = self.store.read_json(analysis_data_rel)
 
                 # Count unique orders and total items
                 if isinstance(analysis_data, list):
@@ -1012,12 +995,14 @@ class SessionManager:
                             order_numbers.add(item["Order_Number"])
                     statistics["total_orders"] = len(order_numbers)
 
-            # Count packing lists
-            packing_lists_dir = session_path_obj / "packing_lists"
-            if packing_lists_dir.exists():
-                packing_lists = [f.stem for f in packing_lists_dir.glob("*.json")]
-                statistics["packing_lists"] = sorted(packing_lists)
-                statistics["packing_lists_count"] = len(packing_lists)
+            # Count packing lists (an absent folder lists as empty)
+            packing_lists = [
+                name[: -len(".json")]
+                for name in self.store.list_dir(f"{rel}/packing_lists")
+                if name.endswith(".json")
+            ]
+            statistics["packing_lists"] = sorted(packing_lists)
+            statistics["packing_lists_count"] = len(packing_lists)
 
         except Exception as e:
             logger.warning(f"Failed to calculate statistics for {session_path}: {e}")

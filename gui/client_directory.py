@@ -83,7 +83,9 @@ class ClientDirectory(QObject):
     def refresh(self) -> None:
         """Reload the client list off the GUI thread and emit `loaded`."""
         worker = Worker(self.gather)
-        worker.signals.result.connect(self.loaded.emit)
+        # A bound method, not self.loaded.emit: Qt drops the connection when this
+        # object is deleted, so a refresh that outlives its window emits nothing.
+        worker.signals.result.connect(self._emit_loaded)
         worker.signals.error.connect(self._on_refresh_error)
         # Tracked in a set, not a single slot: a bare local is collected the
         # instant this returns, which in this PySide6 build destroys the
@@ -93,6 +95,9 @@ class ClientDirectory(QObject):
         self._refresh_workers.add(worker)
         worker.signals.finished.connect(lambda: self._refresh_workers.discard(worker))
         QThreadPool.globalInstance().start(worker)
+
+    def _emit_loaded(self, data: dict) -> None:
+        self.loaded.emit(data)
 
     def _on_refresh_error(self, error) -> None:
         _exctype, value, _tb = error

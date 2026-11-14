@@ -183,7 +183,7 @@ def test_add_product_opens_in_a_session_that_ran_on_inventory_memory(main_window
 
     path = main_window.session_manager.create_session("acme")
     main_window.session_path = path
-    core.write_memory_baseline(path, {"A": 4.0, "B": 9.0}, {"A": "Apple"})
+    core.write_memory_baseline(main_window.profile_manager.store, path, {"A": 4.0, "B": 9.0}, {"A": "Apple"})
     main_window.analysis_results_df = pd.DataFrame(
         {"Order_Number": [1], "SKU": ["A"], "Final_Stock": [4]}
     )

@@ -31,6 +31,7 @@ import shopify_tool.profile_manager as profile_manager_module
 from gui.main_window_pyside import MainWindow
 from gui.session_write_queue import SessionWriteQueue
 from shared.atomic_write import atomic_write_json
+from shared.store import FileStore
 from shopify_tool import core, fulfillment_history, session_state
 from shopify_tool.analysis import lot_table, run_analysis
 from shopify_tool.profile_manager import ProfileManager
@@ -116,10 +117,10 @@ def test_a_failed_toggle_leaves_this_pcs_config_alone(profiles, monkeypatch, tog
     """The Setup page redraws from this copy: it must show what is on disk."""
     pc_a = _pc_opening_client(profiles)
 
-    def locked_by_another_pc(path, *_args, **_kwargs):
-        raise PermissionError(13, "being used by another process", str(path))
+    def locked_by_another_pc(_store, rel, *_args, **_kwargs):
+        raise PermissionError(13, "being used by another process", str(rel))
 
-    monkeypatch.setattr(profile_manager_module, "atomic_write_json", locked_by_another_pc)
+    monkeypatch.setattr(FileStore, "write_json", locked_by_another_pc)
     monkeypatch.setattr(main_window_module, "toast", Mock())
 
     toggle(pc_a)
@@ -155,7 +156,7 @@ def test_AUDIT_07_H2_an_edit_returns_to_the_person_quickly(benchmark_frame, tmp_
 
     assert seconds < 1.0
     assert pc.write_queue.flush(timeout=30)
-    history = fulfillment_history.load(fulfillment_history.history_path(pc.profile_manager, "M"))
+    history = fulfillment_history.load(*fulfillment_history.history_location(pc.profile_manager, "M"))
     assert (history["Session"] == Path(pc.session_path).name).any()
     info = json.loads((Path(pc.session_path) / "session_info.json").read_text(encoding="utf-8"))
     assert session_state.order_counts(pc.analysis_results_df).items() <= info.items()
@@ -165,12 +166,12 @@ def test_a_run_drops_history_rows_of_deleted_sessions(sessions, analysis_run):
     """AUDIT-07-L1: only the run prunes, and only folders that are gone."""
     kept = Path(sessions.create_session("M"))
     path = sessions.create_session("M")
-    history = fulfillment_history.history_path(sessions.profile_manager, "M")
+    store, rel = fulfillment_history.history_location(sessions.profile_manager, "M")
     pd.DataFrame({"Order_Number": ["#8", "#9", "#7"], "Execution_Date": ["2026-01-01"] * 3,
-                  "Session": ["gone", kept.name, ""]}).to_csv(history, index=False)
+                  "Session": ["gone", kept.name, ""]}).to_csv(store.local_path(rel), index=False)
     ok, msg, _df, _stats = analysis_run(path)
     assert ok, msg
-    rows = fulfillment_history.load(history)
+    rows = fulfillment_history.load(store, rel)
     assert set(rows["Session"]) == {kept.name, "", Path(path).name}
 
 
@@ -197,7 +198,7 @@ def test_a_run_writes_no_excel_mirror(sessions, analysis_run):
 def _client_with_sessions(sessions, n=3):
     for _ in range(n):
         sessions.create_session("A")
-    return sessions.sessions_root / "CLIENT_A"
+    return sessions.store.local_path("Sessions/CLIENT_A")
 
 
 def _count_calls(monkeypatch, obj, name):
@@ -290,10 +291,14 @@ def test_AUDIT_07_M2_the_run_writes_its_state_files_atomically(
     path = sessions.create_session("M")
     in_place = in_place_writes("current_state.pkl", "analysis_data.json", "analysis_stats.json")
 
-    ok, msg, _df, _stats = analysis_run(path)
+    ok, msg, _df, stats = analysis_run(path)
 
     assert ok, msg
     assert in_place == []
+    assert "state_warning" not in stats
+    analysis = Path(path) / "analysis"
+    assert (analysis / "current_state.pkl").is_file()
+    assert (analysis / "analysis_stats.json").is_file()
 
 
 # --------------------------------------------------------------------------
@@ -351,14 +356,16 @@ def _write_json(tmp_path):
 
 
 def _write_state(tmp_path):
+    store = FileStore(tmp_path)
+    session = tmp_path / "S1"
     df = pd.DataFrame({"Order_Number": ["#1"]})
-    session_state.save_state(tmp_path, df, session_state.state_stamp(tmp_path))
-    return pd.read_pickle(tmp_path / "analysis" / "current_state.pkl").equals(df)
+    session_state.save_state(store, session, df, session_state.state_stamp(store, session))
+    return pd.read_pickle(session / "analysis" / "current_state.pkl").equals(df)
 
 
 def _write_history(tmp_path):
     df = pd.DataFrame({"Order_Number": ["#1"], "Execution_Date": ["2026-10-05"], "Session": ["S"]})
-    fulfillment_history._write_atomic(tmp_path / "h.csv", df)
+    FileStore(tmp_path).write_bytes("h.csv", df.to_csv(index=False).encode("utf-8"))
     return pd.read_csv(tmp_path / "h.csv", dtype=str).equals(df)
 
 
@@ -454,7 +461,7 @@ def test_AUDIT_07_M7_a_migration_that_cannot_save_still_returns_the_config(
     def locked_by_another_pc(*_args, **_kwargs):
         raise PermissionError(13, "being used by another process", str(path))
 
-    monkeypatch.setattr(profile_manager_module, "atomic_write_json", locked_by_another_pc)
+    monkeypatch.setattr(FileStore, "write_json", locked_by_another_pc)
 
     config = load(profiles, "X")
 

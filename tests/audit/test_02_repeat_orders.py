@@ -19,6 +19,7 @@ import pytest
 
 from gui.actions_handler import ActionsHandler
 from gui.selection_helper import SelectionHelper
+from shared.store import FileStore
 from shopify_tool import core, fulfillment_history
 from shopify_tool.packing_lists import create_packing_list
 from shopify_tool.sku_writeoff import calculate_writeoff_quantities
@@ -152,6 +153,7 @@ class MemoryProfile:
 
     def __init__(self, client_dir, skus):
         self.client_dir = client_dir
+        self.store = FileStore(client_dir)
         self.memory = {"enabled": True, "skus": dict(skus), "names": {}}
 
     def get_inventory_memory(self, _cid):
@@ -210,7 +212,7 @@ def test_order_marked_fulfillable_by_a_person_is_not_flagged_next_day_without_pa
     assert after.to_dict() == {"#1": "Not Fulfillable", "#2": "Fulfillable"}
     # save_session_state is a Mock here; this is the writer it calls.
     fulfillment_history.record_session(
-        shop.history, "2026-09-25_1", mw.analysis_results_df
+        FileStore(shop.dir), shop.history.name, "2026-09-25_1", mw.analysis_results_df
     )
     # #2 shipped without Packing Tool, so the packed signal stays empty.
     df2 = shop.run(lines, [("A", 3)], session_path=str(shop.dir / "2026-09-25_2"))
@@ -227,7 +229,7 @@ def test_order_held_after_analysis_is_not_a_repeat_next_day(shop):
         "Not Fulfillable"
     }
     fulfillment_history.record_session(
-        shop.history, "2026-09-25_1", mw.analysis_results_df
+        FileStore(shop.dir), shop.history.name, "2026-09-25_1", mw.analysis_results_df
     )
     df2 = shop.run(
         [("#1", "A", 1)], [("A", 5)], session_path=str(shop.dir / "2026-09-25_2")
@@ -273,7 +275,7 @@ def test_packing_list_does_not_mark_a_history_only_order(shop, tmp_path):
     df = shop.run([("#1", "A", 1), ("#2", "A", 1)], [("A", 5)])
     assert not repeat(df, "#1")
     out = tmp_path / "list.xlsx"
-    create_packing_list(df, str(out))
+    create_packing_list(FileStore(out.parent), df, out.name)
     sheet = pd.read_excel(out, header=None, dtype=str).fillna("")
     rows_for_1 = sheet[
         sheet.apply(lambda r: r.str.contains("#1", regex=False).any(), axis=1)
@@ -386,7 +388,7 @@ def test_stock_export_writes_a_repeated_sku_off_once_after_reopen(tmp_path):
     pkl = tmp_path / "current_state.pkl"
     df.to_pickle(pkl)
     out = tmp_path / "export.xls"
-    create_stock_export(pd.read_pickle(pkl), str(out))
+    create_stock_export(FileStore(tmp_path), pd.read_pickle(pkl), "export.xls")
     export = pd.read_excel(out, dtype=str)
     assert export["Брой"].astype(int).sum() == 3
     assert dict(zip(export["Партида"], export["Брой"].astype(int))) == {

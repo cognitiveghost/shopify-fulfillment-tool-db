@@ -5,6 +5,7 @@ from datetime import date
 
 import pandas as pd
 
+from shared.store import FileStore
 from shopify_tool import analysis, core, stock_ledger
 
 FF, NF = "Fulfillable", "Not Fulfillable"
@@ -95,12 +96,12 @@ def test_session_lot_table_reads_the_sessions_stock_file(tmp_path):
         "Артикул,Име,Годност,Партида,Наличност\nA,Alpha,270101,LATE,2\nA,Alpha,261230,EARLY,3\n",
         encoding="utf-8",
     )
-    lots = core.session_lot_table(str(tmp_path), CONFIG)
+    lots = core.session_lot_table(FileStore(tmp_path), str(tmp_path), CONFIG)
     assert [(lot["batch"], lot["qty"]) for lot in lots["A"]] == [("EARLY", 3.0), ("LATE", 2.0)]
-    assert core.session_lot_table(str(tmp_path / "missing"), CONFIG) is None
-    assert core.session_lot_table(None, CONFIG) is None
+    assert core.session_lot_table(FileStore(tmp_path), str(tmp_path / "missing"), CONFIG) is None
+    assert core.session_lot_table(FileStore(tmp_path), None, CONFIG) is None
     (tmp_path / "input" / "inventory.csv").write_text("not,a\nstock,file\n", encoding="utf-8")
-    assert core.session_lot_table(str(tmp_path), CONFIG) is None  # unreadable: logged, not raised
+    assert core.session_lot_table(FileStore(tmp_path), str(tmp_path), CONFIG) is None  # unreadable: logged, not raised
 
 
 def test_with_order_fields_leaves_a_minimal_frame_alone():

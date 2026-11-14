@@ -7,6 +7,7 @@ synthetic and only reproduce the shape of the production data.
 """
 
 from datetime import datetime, timedelta
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -17,9 +18,11 @@ from PySide6.QtWidgets import QApplication
 
 import gui.main_window_pyside as main_window_module
 import gui.session_browser_widget as browser_module
+import shared.store as store_mod
 from gui.main_window_pyside import MainWindow
 from shared.atomic_write import atomic_write_json
-from shared.file_lock import FileLockError, locked_file
+from shared.file_lock import locked_file
+from shared.store import FileStore
 from shopify_tool import session_lifecycle
 from shopify_tool.session_manager import SessionManager, SessionManagerError
 
@@ -30,9 +33,6 @@ class _Profiles:
     def __init__(self, root):
         self.root = root
 
-    def get_sessions_root(self):
-        return self.root
-
     def client_exists(self, client_id):
         return True
 
@@ -42,7 +42,7 @@ class _Profiles:
 
 @pytest.fixture
 def sessions(tmp_path):
-    return SessionManager(_Profiles(tmp_path / "Sessions"))
+    return SessionManager(_Profiles(tmp_path / "Sessions"), FileStore(tmp_path))
 
 
 def _orders(*statuses):
@@ -68,6 +68,8 @@ def _pc(session_path, df, session_manager=None):
         analysis_results_df=None if df is None else df.copy(),
         analysis_stats={"total_orders_completed": 0},
         session_manager=session_manager,
+        # sessions sit at <root>/Sessions/CLIENT_X/<name>
+        profile_manager=SimpleNamespace(store=FileStore(Path(session_path).parents[2])),
     )
 
 
@@ -247,24 +249,21 @@ def test_bulk_status_updates_write_atomically(sessions, monkeypatch):
     def fail(*_args, **_kwargs):
         raise OSError("share went away")
 
-    monkeypatch.setattr("shopify_tool.session_manager.atomic_write_json", fail)
+    monkeypatch.setattr("shared.store.atomic_write_json", fail)
     assert sessions.apply_status_updates("M", {name: "archived"}) == 0
     assert sessions.get_session_info(path)["status"] == "active"
 
 
-def test_packing_tools_lock_excludes_our_session_info_writes(sessions):
+def test_packing_tools_lock_excludes_our_session_info_writes(sessions, monkeypatch):
     """Packing Tool's update_session_metadata takes locked_file on the same
     sidecar (packing_tool/session_manager.py), so the read-modify-write race
-    the apply_status_updates docstring still describes is closed."""
+    the apply_status_updates docstring still describes is closed. Our write
+    is refused while that lock is held."""
     path = sessions.create_session("M")
     lock = sessions.get_session_path("M", Path(path).name) / "session_info.json.lock"
-    with (
-        sessions._locked_session_info(lock.parent),
-        open(lock, "a+") as handle,
-        pytest.raises(FileLockError),
-        locked_file(handle, timeout=0.2),
-    ):
-        pass
+    monkeypatch.setattr(store_mod, "locked_file", partial(locked_file, timeout=0.2))
+    with open(lock, "a+") as handle, locked_file(handle), pytest.raises(SessionManagerError):
+        sessions.update_session_info(path, {"comments": "x"})
 
 
 # --------------------------------------------------------------------------

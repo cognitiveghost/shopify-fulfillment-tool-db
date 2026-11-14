@@ -13,8 +13,8 @@ from gui.components.commandbar import BarState
 from gui.selection_helper import order_number_mask
 from gui.settings import SettingsWindow
 from gui.worker import Worker
-from shared.atomic_write import atomic_write_json
 from shared.i18n import _, _n
+from shared.store import StoreError, StoreNotFound
 from shopify_tool import (
     core,
     report_jobs,
@@ -290,7 +290,7 @@ class ActionsHandler(QObject):
             # The run's own stock file is now the session's; later refreshes
             # derive lots from it (ADR 0015).
             self.mw.lot_table = core.session_lot_table(
-                self.mw.session_path, self.mw.active_profile_config
+                self.mw.profile_manager.store, self.mw.session_path, self.mw.active_profile_config
             )
             self.mw.analysis_stats = stats
             # Every recorded operation points at the previous run's frame:
@@ -304,8 +304,10 @@ class ActionsHandler(QObject):
             # the first edit after every analysis is refused as stale.
             if self.mw.session_path:
                 try:
-                    self.mw._state_stamp = session_state.state_stamp(self.mw.session_path)
-                except OSError:
+                    self.mw._state_stamp = session_state.state_stamp(
+                        self.mw.profile_manager.store, self.mw.session_path
+                    )
+                except (OSError, StoreError):
                     # No stamp makes the next save refuse: the safe direction.
                     self.log.exception("Could not stamp the session state")
                     self.mw._state_stamp = None
@@ -383,13 +385,13 @@ class ActionsHandler(QObject):
         see on_analysis_complete for why this must never run inline on the Qt
         main thread.
         """
-        base_path = str(self.mw.profile_manager.base_path)
+        store = self.mw.profile_manager.store
         session_path = self.mw.session_path
         client_id = self.mw.current_client_id
 
         worker = Worker(
             self._record_analysis_stats_job,
-            base_path,
+            store,
             session_path,
             client_id,
             orders_count,
@@ -406,7 +408,7 @@ class ActionsHandler(QObject):
 
     def _record_analysis_stats_job(
         self,
-        base_path,
+        store,
         session_path,
         client_id,
         orders_count,
@@ -420,7 +422,7 @@ class ActionsHandler(QObject):
 
             self.log.info("Recording analysis statistics to server...")
 
-            stats_mgr = StatsManager(base_path=base_path)
+            stats_mgr = StatsManager(store)
             session_name = (
                 derive_session_id(session_path) if session_path else "unknown"
             )
@@ -556,8 +558,10 @@ class ActionsHandler(QObject):
         a check that can't reach the server refuses too.
         """
         try:
-            stale = session_state.is_stale(self.mw.session_path, self.mw._state_stamp)
-        except OSError:
+            stale = session_state.is_stale(
+                self.mw.profile_manager.store, self.mw.session_path, self.mw._state_stamp
+            )
+        except (OSError, StoreError):
             self.log.exception("Could not check the session state before exporting")
             show_error(
                 self.mw,
@@ -673,7 +677,10 @@ class ActionsHandler(QObject):
         for report_config in batch:
             self._log_report_start(report_config)
         # Looked up now, not imported by name, so a test can replace it.
-        worker = Worker(report_jobs.generate_reports, batch, session_path, *self._report_snapshot(batch))
+        worker = Worker(
+            report_jobs.generate_reports, self.mw.profile_manager.store, batch, session_path,
+            *self._report_snapshot(batch),
+        )
         worker.signals.result.connect(self._on_reports_generated)
         worker.signals.error.connect(self.on_task_error)
         worker.signals.finished.connect(self._on_reports_finished)
@@ -804,7 +811,9 @@ class ActionsHandler(QObject):
         batch = [dict(report_config, report_type=report_type)]
         self._log_report_start(batch[0])
         self._on_reports_generated(
-            report_jobs.generate_reports(batch, session_path, *self._report_snapshot(batch))
+            report_jobs.generate_reports(
+                self.mw.profile_manager.store, batch, session_path, *self._report_snapshot(batch)
+            )
         )
 
     def toggle_fulfillment_status_for_order(self, order_number):
@@ -1231,7 +1240,7 @@ class ActionsHandler(QObject):
         # opening stock is the session's memory baseline.
         baseline = None
         if not getattr(self.mw, "stock_file_path", None):
-            baseline = core.read_memory_baseline(self.mw.session_path)
+            baseline = core.read_memory_baseline(self.mw.profile_manager.store, self.mw.session_path)
             if baseline is None:
                 self.log.warning("show_add_product_dialog called with no stock file")
                 show_error(
@@ -1445,24 +1454,21 @@ class ActionsHandler(QObject):
 
     def _save_manual_addition(self, product_data):
         """Save manual addition to session file."""
-        import json
-
         if not hasattr(self.mw, "session_path") or not self.mw.session_path:
             self.log.warning("No active session, manual addition not saved")
             return
 
-        # Path to manual_additions.json
-        additions_file = os.path.join(self.mw.session_path, "manual_additions.json")
+        store = self.mw.profile_manager.store
+        # Store path of manual_additions.json
+        additions_file = f"{session_state.session_rel(store, self.mw.session_path)}/manual_additions.json"
 
         # Load existing additions
-        if os.path.exists(additions_file):
-            try:
-                with open(additions_file, "r", encoding="utf-8") as f:
-                    additions = json.load(f)
-            except Exception:
-                self.log.exception("Failed to load manual additions")
-                additions = []
-        else:
+        try:
+            additions = store.read_json(additions_file)
+        except StoreNotFound:
+            additions = []
+        except Exception:
+            self.log.exception("Failed to load manual additions")
             additions = []
 
         # Add new entry
@@ -1478,7 +1484,7 @@ class ActionsHandler(QObject):
 
         # Save back
         try:
-            atomic_write_json(additions_file, additions, indent=2)
+            store.write_json(additions_file, additions)
             self.log.info(f"Saved manual addition to {additions_file}")
         except Exception:
             self.log.exception("Failed to save manual additions")
@@ -1845,7 +1851,8 @@ class ActionsHandler(QObject):
             )
             return
 
-        session_path_objs = [Path(p) for p in session_paths if Path(p).exists()]
+        store = self.mw.profile_manager.store
+        session_path_objs = [Path(p) for p in session_paths if store.exists(session_state.session_rel(store, p))]
         if len(session_path_objs) < 2:
             # Not a disabled-action guard: the button needs 2+ selected, so
             # sessions went missing on the share after they were listed.
@@ -1862,7 +1869,7 @@ class ActionsHandler(QObject):
             return
 
         combined_df = merge_session_stock_exports(
-            session_path_objs, self.mw.current_client_id
+            store, session_path_objs, self.mw.current_client_id
         )
 
         if combined_df.empty:

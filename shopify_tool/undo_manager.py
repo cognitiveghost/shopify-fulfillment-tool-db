@@ -14,12 +14,11 @@ import os
 import platform
 import re
 from datetime import datetime
-from pathlib import Path
 from typing import Any, ClassVar
 
 import pandas as pd
 
-from shared.atomic_write import atomic_write_json
+from shopify_tool.session_state import session_rel
 from shopify_tool.stock_ledger import with_stock_left
 
 LEGACY_HISTORY_FILE = "operations_history.json"
@@ -473,19 +472,23 @@ class UndoManager:
             affected_rows_before, ["Quantity", "Order_Fulfillment_Status"]
         )
 
-    def _get_history_path(self) -> Path | None:
-        """Get path to this PC's undo history, operations_history_<PC>.json.
+    def _store(self):
+        return self.main_window.profile_manager.store
+
+    def _get_history_path(self) -> str | None:
+        """Get Store path of this PC's undo history, operations_history_<PC>.json.
 
         One file per PC (AUDIT-08-U4): a session reopened on another PC does
         not offer the first PC's undo steps, whose rows it may not hold.
 
         Returns:
-            Path object or None if no active session
+            Store path (POSIX) or None if no active session
         """
         if not self.main_window.session_path:
             return None
 
-        return Path(self.main_window.session_path) / "analysis" / f"operations_history_{_pc_name()}.json"
+        rel = session_rel(self._store(), self.main_window.session_path)
+        return f"{rel}/analysis/operations_history_{_pc_name()}.json"
 
     def _submit(self, kind: str, job) -> None:
         """Run `job` on the window's write queue, or now when there is none."""
@@ -518,8 +521,7 @@ class UndoManager:
         }
 
         def write():
-            history_path.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_json(history_path, history_data, indent=2)
+            self._store().write_json(history_path, history_data)
             self.log.debug(f"Saved history to {history_path}")
 
         self._submit("undo_history", write)
@@ -534,10 +536,14 @@ class UndoManager:
         if not history_path:
             return
 
+        analysis_rel, _, _ = history_path.rpartition("/")
+
         def delete():
-            for other in history_path.parent.glob("operations_history*.json"):
-                if other != history_path:
-                    other.unlink(missing_ok=True)
+            store = self._store()
+            for name in store.list_dir(analysis_rel):
+                other = f"{analysis_rel}/{name}"
+                if name.startswith("operations_history") and name.endswith(".json") and other != history_path:
+                    store.delete(other)
 
         self._submit("undo_history_others", delete)
 
@@ -549,15 +555,20 @@ class UndoManager:
         """
         try:
             history_path = self._get_history_path()
-            if history_path and not history_path.exists():
-                history_path = history_path.with_name(LEGACY_HISTORY_FILE)
+            if not history_path:
+                self.log.debug("No history file found")
+                return
+            store = self._store()
+            if not store.exists(history_path):
+                history_path = history_path.rpartition("/")[0] + "/" + LEGACY_HISTORY_FILE
 
-            if not history_path or not history_path.exists():
+            if not store.exists(history_path):
                 self.log.debug("No history file found")
                 return
 
-            with open(history_path, 'r', encoding='utf-8') as f:
-                history_data = json.load(f)
+            # json.loads on the bytes, not read_json: a corrupt file must
+            # still take the JSONDecodeError branch below, not the generic one.
+            history_data = json.loads(store.read_bytes(history_path))
 
             self.operations = history_data.get("operations", [])
             self.current_position = history_data.get("current_position", 0)

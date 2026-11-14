@@ -19,6 +19,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from shared.store import FileStore
 from shopify_tool import core, fulfillment_history
 from shopify_tool.analysis import run_analysis
 from shopify_tool.session_manager import SessionManager
@@ -60,6 +61,7 @@ class Profiles:
 
     def __init__(self, root):
         self.root = Path(root)
+        self.store = FileStore(self.root)
 
     def get_sessions_root(self):
         return self.root / "Sessions"
@@ -101,7 +103,7 @@ def benchmark_frame_fixture():
 
 @pytest.fixture(name="sessions")
 def sessions_fixture(tmp_path):
-    return SessionManager(Profiles(tmp_path))
+    return SessionManager(Profiles(tmp_path), FileStore(tmp_path))
 
 
 @pytest.fixture(name="analysis_run")

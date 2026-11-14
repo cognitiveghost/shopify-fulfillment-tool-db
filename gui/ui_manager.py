@@ -398,7 +398,7 @@ class UIManager:
 
     def _open_user_guide(self):
         """The Fulfilment user guide, from the ⋯ menu or F1."""
-        open_guide(self.mw, str(self.mw.profile_manager.base_path), "fulfilment")
+        open_guide(self.mw, self.mw.profile_manager.store, "fulfilment")
 
     def _open_connection_settings(self):
         """Open the Server Connection settings dialog.

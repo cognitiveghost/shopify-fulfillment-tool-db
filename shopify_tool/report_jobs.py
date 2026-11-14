@@ -14,16 +14,16 @@ generate never reaches a file half-way through.
 import hashlib
 import json
 import logging
-import os
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pandas as pd
 
-from shared.atomic_write import atomic_write_json
+from shared.store import StoreError
 
 from . import barcode_processor, core, packing_lists, report_filters, stock_export
+from .session_state import session_rel
 
 logger = logging.getLogger(__name__)
 
@@ -86,42 +86,42 @@ def recorded_fingerprints(session_info) -> dict[str, str]:
     return {k: v for k, v in found.items() if isinstance(k, str) and isinstance(v, str)}
 
 
-def withdraw_lists(session_path, names) -> list[str]:
+def withdraw_lists(store, session_path, names) -> list[str]:
     """Move unstarted packing lists out of the Packer's reach (AUDIT-10-4, ADR 0019).
 
     The Packer reads only packing_lists/*.json; a list moved to packing_lists/withdrawn/ cannot
     be opened. A list whose packing/<name>/ folder exists has been started and stays. Returns
     the names whose JSON was moved. Never raises for a file held open: it logs and goes on.
     """
-    session = Path(session_path)
-    lists_dir = session / "packing_lists"
+    session = session_rel(store, session_path)
+    lists_dir = f"{session}/packing_lists"
     withdrawn = []
     for name in names:
-        if (session / "packing" / name).exists():
+        if store.exists(f"{session}/packing/{name}"):
             continue
         moved_json = False
         for suffix in (".json", ".xlsx"):
-            source = lists_dir / f"{name}{suffix}"
-            if not source.exists():
+            source = f"{lists_dir}/{name}{suffix}"
+            if not store.exists(source):
                 continue
             try:
-                (lists_dir / WITHDRAWN_DIR).mkdir(exist_ok=True)
-                os.replace(source, lists_dir / WITHDRAWN_DIR / source.name)
+                store.move(source, f"{lists_dir}/{WITHDRAWN_DIR}/{name}{suffix}")
             except PermissionError:
-                logger.warning(f"Could not withdraw {source.name}: it is open in another program")
+                logger.warning(f"Could not withdraw {name}{suffix}: it is open in another program")
                 continue
             moved_json |= suffix == ".json"
         if not moved_json:
             continue
         try:
-            barcode_processor.invalidate_label_pdfs(session_path, name)
+            barcode_processor.invalidate_label_pdfs(store, session_path, name)
         except PermissionError:
             logger.warning(f"A label PDF of withdrawn list {name} is open; it stays until regenerated")
         withdrawn.append(name)
     return withdrawn
 
 
-def _output_file(report_type: str, report_name: str, report_config: dict, output_dir: Path) -> str:
+def _output_file(report_type: str, report_name: str, report_config: dict, output_dir: str) -> str:
+    """The store path of the report's file, inside output_dir (a store path)."""
     suffix = ".xlsx" if report_type == "packing_lists" else ".xls"
     base_filename = report_config.get("output_filename", "") or f"{report_name}{suffix}"
     # Case-insensitive (AUDIT-10-1): "MASKS.XLSX" passed through and pandas
@@ -131,10 +131,11 @@ def _output_file(report_type: str, report_name: str, report_config: dict, output
         path = path.with_suffix(suffix)
     else:
         path = Path(base_filename + suffix)
-    return str(output_dir / path)
+    return f"{output_dir}/{path.as_posix()}"
 
 
 def generate_report(
+    store,
     report_config: dict,
     session_path,
     analysis_df: pd.DataFrame,
@@ -151,39 +152,45 @@ def generate_report(
     logger.info(f"Generating {report_type}: {report_name}")
 
     try:
+        session = session_rel(store, session_path)
         if report_type == "packing_lists":
-            output_dir = Path(session_path) / "packing_lists"
+            output_dir = f"{session}/packing_lists"
         elif report_type == "stock_exports":
-            output_dir = Path(session_path) / "stock_exports"
+            output_dir = f"{session}/stock_exports"
         else:
             raise ValueError(f"Unknown report type: {report_type}")
-        output_dir.mkdir(parents=True, exist_ok=True)
+        # Ensures the folder exists (claim_dir's False means it already did).
+        store.claim_dir(output_dir)
 
         filters = report_config.get("filters", [])
-        output_file = _output_file(report_type, report_name, report_config, output_dir)
+        output_rel = _output_file(report_type, report_name, report_config, output_dir)
         if report_type == "stock_exports":
             # Stamps the name, moving earlier versions to old/
-            output_file = stock_export.prepare_export_path(output_file)
+            output_rel = stock_export.prepare_export_path(store, output_rel)
+        stem = PurePosixPath(output_rel).stem
 
-        outcome = ReportOutcome(report_name, report_type, output_file=output_file)
+        outcome = ReportOutcome(
+            report_name, report_type, output_file=str(store.local_path(output_rel))
+        )
 
         if report_type == "packing_lists":
             # Label PDFs from before could label orders this list no longer
             # holds (AUDIT-04-12). First, so a PDF held open in a viewer
             # stops the run before the XLSX and JSON can diverge.
             try:
-                barcode_processor.invalidate_label_pdfs(session_path, Path(output_file).stem)
+                barcode_processor.invalidate_label_pdfs(store, session_path, stem)
             except PermissionError:
                 # The old list must not wait for the Packer while the PDF is closed (AUDIT-10-4).
-                withdraw_lists(session_path, [Path(output_file).stem])
+                withdraw_lists(store, session_path, [stem])
                 raise
 
-            json_path = str(Path(output_file).with_suffix(".json"))
+            json_rel = str(PurePosixPath(output_rel).with_suffix(".json"))
             try:
                 # The module applies the filters itself.
                 written = packing_lists.create_packing_list(
+                    store,
                     analysis_df=analysis_df,
-                    output_file=output_file,
+                    output_rel=output_rel,
                     report_name=report_name,
                     filters=filters,
                     exclude_skus=report_config.get("exclude_skus"),
@@ -193,11 +200,11 @@ def generate_report(
                 if not written:
                     # An empty list must not leave the last run's files behind
                     # for the packers to pick up (AUDIT-04-3)
-                    Path(output_file).unlink(missing_ok=True)
-                    Path(json_path).unlink(missing_ok=True)
+                    store.delete(output_rel)
+                    store.delete(json_rel)
                     outcome.removed_empty = True
                 else:
-                    logger.info(f"Packing list XLSX created: {output_file}")
+                    logger.info(f"Packing list XLSX created: {outcome.output_file}")
                     outcome.fingerprint = packing_fingerprint(analysis_df)
                     filtered_df = report_filters.apply_report_filters(
                         report_filters.fulfillable_only(analysis_df), filters
@@ -206,26 +213,27 @@ def generate_report(
                     json_df = report_filters.exclude_skus(
                         filtered_df, report_config.get("exclude_skus")
                     )
-                    atomic_write_json(json_path, packing_list_json(json_df, session_id))
-                    logger.info(f"Packing list JSON created: {json_path}")
+                    store.write_json(json_rel, packing_list_json(json_df, session_id))
+                    logger.info(f"Packing list JSON created: {json_rel}")
             except Exception:
                 # The XLSX or JSON may now disagree with the old list, so the Packer must not
                 # open the old one (AUDIT-10-4, AUDIT-09-O5). The failure reaches the outcome below.
-                withdraw_lists(session_path, [Path(output_file).stem])
+                withdraw_lists(store, session_path, [stem])
                 raise
 
         else:
             outcome.packaging_file = stock_export.create_stock_export(
+                store,
                 analysis_df=analysis_df,
-                output_file=output_file,
+                output_rel=output_rel,
                 report_name=report_name,
                 filters=filters,
                 writeoff_mode=report_config.get("writeoff_mode", "off"),
                 tag_categories=tag_categories,
             )
-            logger.info(f"Stock export created: {output_file}")
+            logger.info(f"Stock export created: {output_rel}")
 
-        logger.info(f"Report generated: {output_file}")
+        logger.info(f"Report generated: {outcome.output_file}")
         return outcome
 
     except PermissionError as e:
@@ -238,6 +246,7 @@ def generate_report(
 
 
 def generate_reports(
+    store,
     batch: list[dict],
     session_path,
     analysis_df: pd.DataFrame,
@@ -254,7 +263,7 @@ def generate_reports(
     for report_config in batch:
         try:
             outcome = generate_report(
-                report_config, session_path, analysis_df, tag_categories, session_id
+                store, report_config, session_path, analysis_df, tag_categories, session_id
             )
         except Exception:
             logger.exception(f"Failed to generate {report_config.get('name')}")
@@ -266,11 +275,11 @@ def generate_reports(
     # Failed ones count too: every failed packing-list write withdraws the old list
     # (AUDIT-10-4, AUDIT-09-O5), and the statistics must follow.
     if session_manager is not None and any(o.report_type == "packing_lists" for o in outcomes):
-        update_packing_list_statistics(session_manager, session_path, outcomes)
+        update_packing_list_statistics(store, session_manager, session_path, outcomes)
     return outcomes
 
 
-def update_packing_list_statistics(session_manager, session_path, outcomes=()) -> None:
+def update_packing_list_statistics(store, session_manager, session_path, outcomes=()) -> None:
     """Record the session's packing lists in session_info's statistics.
 
     Rebuilt from the JSON files in packing_lists/, so a withdrawn or removed list drops out:
@@ -278,10 +287,10 @@ def update_packing_list_statistics(session_manager, session_path, outcomes=()) -
     (AUDIT-10-4). Never raises.
     """
     try:
-        packing_lists_dir = Path(session_path) / "packing_lists"
-        if not packing_lists_dir.exists():
+        packing_lists_dir = f"{session_rel(store, session_path)}/packing_lists"
+        if not store.exists(packing_lists_dir):
             return
-        names = sorted(f.stem for f in packing_lists_dir.glob("*.json"))
+        names = sorted(n[: -len(".json")] for n in store.list_dir(packing_lists_dir) if n.endswith(".json"))
         session_info = session_manager.get_session_info(str(session_path))
         if not session_info:
             return
@@ -289,10 +298,8 @@ def update_packing_list_statistics(session_manager, session_path, outcomes=()) -
         orders = {}
         for name in names:
             try:
-                total = json.loads((packing_lists_dir / f"{name}.json").read_text(encoding="utf-8")).get(
-                    "total_orders"
-                )
-            except (OSError, ValueError, AttributeError):
+                total = store.read_json(f"{packing_lists_dir}/{name}.json").get("total_orders")
+            except (StoreError, AttributeError):
                 continue
             if isinstance(total, int) and not isinstance(total, bool):
                 orders[name] = total

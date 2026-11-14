@@ -444,7 +444,7 @@ def test_overflow_has_user_guide(main_window, monkeypatch):
 
     item = next(a for a in menu.actions() if a.text() == "User guide")
     item.trigger()
-    assert calls == [(main_window, str(main_window.profile_manager.base_path), "fulfilment")]
+    assert calls == [(main_window, main_window.profile_manager.store, "fulfilment")]
 
 
 def test_f1_opens_user_guide(main_window, monkeypatch):
@@ -456,7 +456,7 @@ def test_f1_opens_user_guide(main_window, monkeypatch):
     monkeypatch.setattr(ui, "open_guide", lambda *args: calls.append(args))
     f1 = next(s for s in main_window.findChildren(QShortcut) if s.key().toString() == "F1")
     f1.activated.emit()
-    assert calls == [(main_window, str(main_window.profile_manager.base_path), "fulfilment")]
+    assert calls == [(main_window, main_window.profile_manager.store, "fulfilment")]
 
 
 def test_collapsing_is_remembered_on_this_pc(tmp_path, monkeypatch):

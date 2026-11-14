@@ -5,6 +5,7 @@ import pandas as pd
 
 import gui.actions_handler as ah
 from gui.actions_handler import ActionsHandler
+from shared.store import FileStore
 from shopify_tool.barcode_processor import invalidate_label_pdfs
 
 
@@ -21,10 +22,11 @@ def _df(status="Fulfillable"):
     })
 
 
-def _handler(df):
+def _handler(df, root):
     mw = MagicMock()
     mw.analysis_results_df = df
     mw.session_path = None
+    mw.profile_manager.store = FileStore(root)
     return ActionsHandler(mw)
 
 
@@ -33,26 +35,26 @@ def test_invalidate_deletes_both_label_pdfs_and_nothing_else(tmp_path):
     d.mkdir(parents=True)
     for name in ("ALL_barcodes.pdf", "ALL_qr_labels.pdf", "keep.txt"):
         (d / name).write_bytes(b"x")
-    removed = invalidate_label_pdfs(tmp_path, "ALL")
-    assert sorted(p.name for p in removed) == ["ALL_barcodes.pdf", "ALL_qr_labels.pdf"]
+    removed = invalidate_label_pdfs(FileStore(tmp_path), tmp_path, "ALL")
+    assert sorted(Path(p).name for p in removed) == ["ALL_barcodes.pdf", "ALL_qr_labels.pdf"]
     assert [p.name for p in d.iterdir()] == ["keep.txt"]
 
 
 def test_invalidate_without_a_barcodes_folder_is_a_no_op(tmp_path):
-    assert invalidate_label_pdfs(tmp_path, "ALL") == []
+    assert invalidate_label_pdfs(FileStore(tmp_path), tmp_path, "ALL") == []
 
 
 def test_regenerating_a_list_drops_its_label_pdfs(tmp_path):
     d = tmp_path / "barcodes" / "ALL"
     d.mkdir(parents=True)
     (d / "ALL_barcodes.pdf").write_bytes(b"old")
-    _handler(_df())._generate_single_report("packing_lists", _config(), tmp_path)
+    _handler(_df(), tmp_path)._generate_single_report("packing_lists", _config(), tmp_path)
     assert not (d / "ALL_barcodes.pdf").exists()
     assert (tmp_path / "packing_lists" / "ALL.xlsx").exists()
 
 
 def test_empty_list_says_so_instead_of_report_saved(tmp_path):
-    h = _handler(_df())
+    h = _handler(_df(), tmp_path)
     h._generate_single_report("packing_lists", _config(), tmp_path)
     h.mw.analysis_results_df = _df("Not Fulfillable")
     h._generate_single_report("packing_lists", _config(), tmp_path)
@@ -62,7 +64,7 @@ def test_empty_list_says_so_instead_of_report_saved(tmp_path):
 
 def test_empty_list_with_its_file_open_reports_the_lock(tmp_path, monkeypatch):
     # Review Focus 4: Excel holding ALL.xlsx open on Windows.
-    h = _handler(_df())
+    h = _handler(_df(), tmp_path)
     h._generate_single_report("packing_lists", _config(), tmp_path)
     h.mw.analysis_results_df = _df("Not Fulfillable")
     real_unlink = Path.unlink
@@ -82,7 +84,7 @@ def test_empty_list_with_its_file_open_reports_the_lock(tmp_path, monkeypatch):
 def test_a_locked_label_pdf_stops_the_run_before_the_list_changes(tmp_path, monkeypatch):
     # A PDF held open in a viewer must not leave a new XLSX beside the old JSON. The old list
     # is withdrawn whole (AUDIT-10-4): both files move together, unchanged.
-    h = _handler(_df())
+    h = _handler(_df(), tmp_path)
     h._generate_single_report("packing_lists", _config(), tmp_path)
     xlsx = tmp_path / "packing_lists" / "ALL.xlsx"
     json_file = tmp_path / "packing_lists" / "ALL.json"

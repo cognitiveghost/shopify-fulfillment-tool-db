@@ -2,6 +2,7 @@
 
 import pandas as pd
 
+from shared.store import FileStore
 from shopify_tool import core, fulfillment_history
 
 _ORDERS_MAPPING = {
@@ -51,7 +52,7 @@ class TestCountCsvRows:
 
 
 class TestInventoryMemoryStockReconstruction:
-    def test_reconstructed_stock_has_sku_product_name_and_stock_columns(self):
+    def test_reconstructed_stock_has_sku_product_name_and_stock_columns(self, tmp_path):
         orders_df = pd.DataFrame(
             [
                 {
@@ -67,12 +68,12 @@ class TestInventoryMemoryStockReconstruction:
             "_inventory_memory": {"enabled": True, "skus": {"A1": 8.0}},
             "column_mappings": {"orders": _ORDERS_MAPPING, "stock": {}},
         }
-        _orders, stock_df = core._load_and_validate_files(None, None, ",", ",", config)
+        _orders, stock_df = core._load_and_validate_files(None, None, ",", ",", config, FileStore(tmp_path))
         assert list(stock_df.columns) == ["SKU", "Product_Name", "Stock"]
         assert stock_df.iloc[0]["SKU"] == "A1"
         assert stock_df.iloc[0]["Stock"] == 8.0
 
-    def test_reconstructed_stock_preserves_warehouse_name(self):
+    def test_reconstructed_stock_preserves_warehouse_name(self, tmp_path):
         from shopify_tool import analysis
 
         orders_df = pd.DataFrame(
@@ -97,7 +98,7 @@ class TestInventoryMemoryStockReconstruction:
             "column_mappings": {"orders": _ORDERS_MAPPING, "stock": {}},
         }
         _orders_clean, stock_df = core._load_and_validate_files(
-            None, None, ",", ",", config
+            None, None, ",", ",", config, FileStore(tmp_path)
         )
         history_df = pd.DataFrame({"Order_Number": [], "Execution_Date": []})
         final_df, *_ = analysis.run_analysis(stock_df, orders_df, history_df)
@@ -419,6 +420,8 @@ class TestInventoryMemoryEndToEnd:
         saved = {}
 
         class FakeProfileManager:
+            store = FileStore(tmp_path)
+
             def load_shopify_config(self, _client_id):
                 return {"inventory_memory": {"enabled": True}}
 

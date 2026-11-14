@@ -23,6 +23,7 @@ from test_stale_session import (  # noqa: F401  main_window is a fixture
 
 import gui.main_window_pyside as main_window_module
 from gui.report_selection_dialog import GenerateReportsDialog
+from shared.store import FileStore
 from shopify_tool import core, report_jobs
 
 
@@ -58,7 +59,7 @@ def test_audit_10_1_an_upper_case_name_still_writes_the_packing_list(tmp_path):
          "Internal_Tags": ["[]"]}
     )
     config = {"name": "MASKS", "report_type": "packing_lists", "output_filename": "MASKS.XLSX", "filters": []}
-    outcome = report_jobs.generate_report(config, tmp_path, frame, {}, "s")
+    outcome = report_jobs.generate_report(FileStore(tmp_path), config, tmp_path, frame, {}, "s")
     assert not outcome.failed
     assert (tmp_path / "packing_lists" / "MASKS.xlsx").exists()
     assert (tmp_path / "packing_lists" / "MASKS.json").exists()
@@ -103,12 +104,12 @@ def test_audit_10_4_a_failed_regeneration_withdraws_the_old_list(tmp_path, monke
     lists.mkdir()
     (lists / "ALL.json").write_text("{}", encoding="utf-8")
 
-    def held(session_path, stem):
+    def held(_store, session_path, stem):
         raise PermissionError(13, "open in a viewer", f"{stem}_barcodes.pdf")
 
     monkeypatch.setattr(report_jobs.barcode_processor, "invalidate_label_pdfs", held)
     config = {"name": "ALL", "report_type": "packing_lists", "output_filename": "ALL.xlsx", "filters": []}
-    outcome = report_jobs.generate_report(config, tmp_path, pd.DataFrame(), {}, "s")
+    outcome = report_jobs.generate_report(FileStore(tmp_path), config, tmp_path, pd.DataFrame(), {}, "s")
     assert outcome.failed and outcome.locked_file
     assert not (lists / "ALL.json").exists()
 
@@ -154,7 +155,7 @@ def test_audit_10_4_an_edit_withdraws_the_out_of_date_list_once(main_window, toa
 def test_audit_10_4_a_list_that_could_not_be_withdrawn_is_reported(main_window, toasts, qtbot, monkeypatch):
     path = _with_list(main_window)
     toasts.clear()
-    monkeypatch.setattr(report_jobs, "withdraw_lists", lambda session_path, names: [])  # held open
+    monkeypatch.setattr(report_jobs, "withdraw_lists", lambda _store, session_path, names: [])  # held open
     main_window.actions_handler.bulk_change_status(["#1001"], False)
     assert main_window.write_queue.flush(timeout=10)
     assert (Path(path) / "packing_lists" / "ALL.json").exists()
@@ -227,7 +228,7 @@ def test_opening_a_session_loads_its_recorded_fingerprints(main_window):
     )
     from shopify_tool import session_state
 
-    session_state.save_state(path, LISTED, None)
+    session_state.save_state(main_window.profile_manager.store, path, LISTED, None)
     main_window.load_existing_session(path)
     assert main_window._list_fingerprints == {"ALL": "ab"}
 
@@ -246,7 +247,7 @@ def _inputs(tmp_path):
     (tmp_path / "stock.csv").write_text("Артикул,Име,Наличност\nA,Alpha,5\nB,Beta,1\n", encoding="utf-8")
     config = {"column_mappings": MAPPINGS_10, "settings": {}}
     orders, stock = core._load_and_validate_files(
-        str(tmp_path / "stock.csv"), str(tmp_path / "orders.csv"), ",", ",", config)
+        str(tmp_path / "stock.csv"), str(tmp_path / "orders.csv"), ",", ",", config, FileStore(tmp_path))
     return orders, stock, config
 
 
@@ -332,7 +333,7 @@ def test_audit_10_10_editing_a_group_without_changes_saves_nothing(qapp, tmp_pat
     import gui.groups_management_dialog as groups_dialog
     from shopify_tool.groups_manager import GroupsManager
 
-    groups = GroupsManager(base_path=str(tmp_path))
+    groups = GroupsManager(FileStore(tmp_path))
     groups.create_group("Bulk", "#FF0000")
     toasts = []
     monkeypatch.setattr(groups_dialog, "toast", lambda _w, text, **k: toasts.append(text))
