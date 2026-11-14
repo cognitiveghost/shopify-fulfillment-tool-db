@@ -147,3 +147,15 @@ def test_local_path_of_a_folder_makes_no_call(store, tmp_path, monkeypatch):
     monkeypatch.setattr(type(store), "_bucket", property(boom))  # any storage use would raise
     assert store.local_path("Clients") == tmp_path / "Clients"
     assert store.local_path("Sessions/CLIENT_X/s1") == tmp_path / "Sessions/CLIENT_X/s1"
+
+
+def test_query_sessions_lists_live_sessions_with_info(store):
+    store.write_json("Sessions/CLIENT_X/live/session_info.json", {"status": "active"})
+    store.write_json("Sessions/CLIENT_X/archived/session_info.json", {"status": "active"})
+    store.claim_dir("Sessions/CLIENT_X/no_info")  # a session row with no info yet
+    # Store.move archives a whole client only, so flag this session's row directly.
+    store.client.table("sessions").update({"archived": True}).match(
+        {"client_id": "X", "name": "archived"}).execute()
+
+    assert store.query_sessions("X") == [{"session_name": "live", "status": "active"}]
+    assert store.query_sessions("NOBODY") == []

@@ -196,6 +196,26 @@ def test_corrupt_json_raises_store_error(store):
     assert not isinstance(e.value, StoreNotFound)
 
 
+def test_update_json_retries_a_failed_read(tmp_path, monkeypatch):
+    # A sharing violation on the share must not drop the update (AUDIT-02-5).
+    store = FileStore(tmp_path)
+    store.write_json(S + "r.json", {"n": 1})
+    monkeypatch.setattr(store_mod, "LOCK_READ_RETRY_SECONDS", 0)
+    real_read, failed = store.read_json, []
+
+    def flaky_read(rel):
+        if not failed:
+            failed.append(True)
+            raise StoreError(rel)
+        return real_read(rel)
+
+    monkeypatch.setattr(store, "read_json", flaky_read)
+    assert store.update_json(S + "r.json", lambda d: {"n": d["n"] + 1}) == {"n": 2}
+    monkeypatch.setattr(store, "read_json", lambda rel: (_ for _ in ()).throw(StoreError(rel)))
+    with pytest.raises(StoreError):
+        store.update_json(S + "r.json", lambda d: d)
+
+
 def test_update_json_sidecar_lock_hidden_from_list_dir(store):
     store.update_json(S + "d/c.json", lambda d: {"n": 1})
     assert store.list_dir(S + "d") == ["c.json"]
@@ -260,3 +280,22 @@ def test_write_bytes_if_right_stamp_writes_and_returns_new_stamp(store):
     new = store.write_bytes_if(S + "r.bin", b"bbb", held)
     assert store.read_bytes(S + "r.bin") == b"bbb"
     assert new != held and new == store.stamp(S + "r.bin")
+
+
+def test_lock_info_reads_without_taking(store):
+    assert store.lock_info(LIST) is None
+    store.acquire_list_lock(LIST, "pc1", "ann")
+    info = store.lock_info(LIST)
+    assert (info.holder_pc, info.holder_user) == ("pc1", "ann") and info.heartbeat_at is not None
+    assert store.lock_info(LIST).holder_pc == "pc1"  # reading did not change the holder
+    store.release_list_lock(LIST, "pc1")
+    assert store.lock_info(LIST) is None
+
+
+def test_virtual_session_folders_exist_when_they_have_children(store):
+    store.write_json(S + "session_info.json", {"status": "active"})
+    assert not store.exists(S + "packing_lists") and not store.exists(S + "packing/list1")
+    store.write_json(S + "packing_lists/list1.json", {"orders": []})
+    store.write_json(S + "packing/list1/packing_state.json", {"progress": {}})
+    assert store.exists(S + "packing_lists") and store.exists(S + "packing")
+    assert store.exists(S + "packing/list1")

@@ -2,5 +2,4 @@
 # A file listed here is exempt from tests/test_store_guard.py as a whole. Reasons:
 #   TODO-migrate(4b|4c|4d) = belongs to a later Task 4 part; remove the line when migrated.
 #   anything else          = genuinely local file (export target, temp dir, app data, logs).
-shopify_tool/session_manager.py:session_index.json: FileStore-only derived cache, replaced by Store.query_sessions in Task 8
 shared/logger.py:local log files written by setup_logging, not Store data

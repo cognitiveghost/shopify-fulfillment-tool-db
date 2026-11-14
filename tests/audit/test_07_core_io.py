@@ -216,7 +216,7 @@ def _count_calls(monkeypatch, obj, name):
 def test_AUDIT_07_H3_a_stray_folder_does_not_force_rescans(sessions, monkeypatch):
     client_dir = _client_with_sessions(sessions)
     (client_dir / "stray_folder").mkdir()  # half-deleted session, manual archive
-    scans = _count_calls(monkeypatch, sessions, "_scan_sessions")
+    scans = _count_calls(monkeypatch, sessions.store, "_scan_sessions")
 
     for _ in range(5):
         listed = sessions.list_client_sessions("A")
@@ -227,7 +227,7 @@ def test_AUDIT_07_H3_a_stray_folder_does_not_force_rescans(sessions, monkeypatch
 
 def test_without_a_stray_folder_the_index_is_scanned_once(sessions, monkeypatch):
     _client_with_sessions(sessions)
-    scans = _count_calls(monkeypatch, sessions, "_scan_sessions")
+    scans = _count_calls(monkeypatch, sessions.store, "_scan_sessions")
     for _ in range(5):
         sessions.list_client_sessions("A")
     assert len(scans) <= 1
@@ -236,7 +236,7 @@ def test_without_a_stray_folder_the_index_is_scanned_once(sessions, monkeypatch)
 def test_AUDIT_07_H4_a_packing_tool_write_refreshes_one_entry(sessions, monkeypatch):
     client_dir = _client_with_sessions(sessions)
     sessions.list_client_sessions("A")  # builds the index
-    index_mtime = (client_dir / sessions.INDEX_FILENAME).stat().st_mtime
+    index_mtime = (client_dir / "session_index.json").stat().st_mtime
 
     # Packing Tool writes completed_orders into one session as temp + rename.
     packed = min(p for p in client_dir.iterdir() if p.is_dir())
@@ -245,7 +245,8 @@ def test_AUDIT_07_H4_a_packing_tool_write_refreshes_one_entry(sessions, monkeypa
     atomic_write_json(packed / "session_info.json", info)
     os.utime(packed, (index_mtime + 5, index_mtime + 5))
 
-    reads = _count_calls(monkeypatch, sessions, "get_session_info")
+    reads = [c for c in _count_calls(monkeypatch, sessions.store, "read_json")
+             if c[0].endswith("session_info.json")]
     listed = sessions.list_client_sessions("A")
 
     by_name = {s["session_name"]: s for s in listed}
