@@ -1,0 +1,26 @@
+{
+  "data": {
+    "orders": {
+      "pageInfo": {"hasNextPage": false, "endCursor": "orders-cursor-2"},
+      "nodes": [
+        {
+          "id": "gid://shopify/Order/1003",
+          "name": "#1003",
+          "createdAt": "2026-11-02T08:15:00Z",
+          "note": null,
+          "tags": ["fragile"],
+          "subtotalPriceSet": {"shopMoney": {"amount": "40.50"}},
+          "totalPriceSet": {"shopMoney": {"amount": "45.50"}},
+          "shippingLine": {"title": "Express 1-2 days"},
+          "shippingAddress": {"name": "Probna Testova", "countryCodeV2": "PL"},
+          "lineItems": {
+            "pageInfo": {"hasNextPage": false, "endCursor": null},
+            "nodes": [
+              {"sku": "SKU-DELTA-4", "name": "Delta Oil 100ml", "quantity": 3}
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

@@ -4,17 +4,20 @@ import tempfile
 from pathlib import Path
 
 import pandas as pd
+from PySide6.QtCore import QThreadPool
 from PySide6.QtWidgets import QFileDialog
 
-from gui.components import ConfirmDialog
+from gui.components import ConfirmDialog, show_error, toast
 from gui.setup_state import MAPPING_PAGE
+from gui.worker import Worker
 from shared.i18n import N_, _, _n
-from shopify_tool import core
+from shopify_tool import core, session_state
 from shopify_tool.csv_utils import (
     AUTO_DELIMITER,
     merge_csv_files,
     resolve_delimiter,
 )
+from shopify_tool.order_sources import OrderSourceError, fetch_orders
 
 # Folder mode used to ask for these with two checkboxes each, in the widget
 # cluster Bundle 5 deleted. Spec §10.3 puts them back inside the loaded slot;
@@ -79,6 +82,7 @@ class FileHandler:
         """
         self.mw = main_window
         self.log = logging.getLogger(__name__)
+        self._pull_worker = None  # the pull in flight, so a second click waits for it
 
     def _delimiter_for(self, kind: str, path: str) -> str:
         """The delimiter `path` is read with: the client's override, or Auto."""
@@ -127,6 +131,71 @@ class FileHandler:
         elif not self._stock_file_usable(path):
             return
         self.validate_file(kind)
+
+    def pull_orders(self) -> None:
+        """Fetch the client's open orders from its store, then load them as a CSV was.
+
+        The fetch and the write to the session's input/orders_export.csv
+        (replacing any earlier input) run in a worker; the file then goes down
+        the same route as a picked one.
+        """
+        if not self.mw.session_path:
+            self.log.warning("pull_orders called with no session open")
+            return
+        if self._pull_worker is not None:
+            return
+        config = self.mw.active_profile_config or {}
+        source = config.get("order_source")
+        if not source:
+            show_error(
+                self.mw,
+                _("No store connected"),
+                _("No store connected for this client. Set it in Client settings."),
+            )
+            return
+        store = self.mw.profile_manager.store
+        session_path = self.mw.session_path
+        rel = f"{session_state.session_rel(store, session_path)}/input/orders_export.csv"
+        # Written with the delimiter the client's override will read it back with.
+        override = config.get("settings", {}).get("orders_csv_delimiter")
+        sep = override if override and override != AUTO_DELIMITER else ","
+        shop = source.get("shop", "")
+        worker = Worker(_pull_into_session, source, store, rel, sep)
+        worker.signals.result.connect(
+            lambda result: self._on_orders_pulled(result, shop, session_path)
+        )
+        worker.signals.error.connect(self._on_pull_failed)
+        worker.signals.finished.connect(lambda: setattr(self, "_pull_worker", None))
+        self._pull_worker = worker
+        QThreadPool.globalInstance().start(worker)
+
+    def _on_pull_failed(self, error) -> None:
+        _exc_type, exc, details = error
+        if isinstance(exc, OrderSourceError):
+            show_error(self.mw, _("Orders weren't pulled"), str(exc))
+            return
+        self.log.error("Pull orders failed: %s", details)
+        show_error(self.mw, _("Orders weren't pulled"), _("Details are in Logs."))
+
+    def _on_orders_pulled(self, result, shop: str, session_path) -> None:
+        orders_df, path = result
+        if self.mw.session_path != session_path:
+            # Written into the session it was pulled for; this one never asked.
+            self.log.info("Pulled orders arrived after the session changed; not loaded")
+            return
+        if path is None:
+            toast(self.mw, _("No open unfulfilled orders in {shop}", shop=shop))
+            return
+        self.load_file("orders", path)
+        toast(
+            self.mw,
+            _(
+                "Pulled {orders} orders ({lines} lines) from {shop}",
+                orders=orders_df["Name"].nunique(),
+                lines=len(orders_df),
+                shop=shop,
+            ),
+        )
 
     def _fail(self, kind: str, path, title: str, text: str, fix_page: str = "") -> None:
         """The file cannot be used: say so in its card and forget its path."""
@@ -738,3 +807,12 @@ class FileHandler:
         self.log.info(f"Saved merged file: {merged_path}")
 
         return str(merged_path), len(merged_df), skipped
+
+
+def _pull_into_session(source, store, rel: str, sep: str):
+    """Worker body: (orders, local path of the written input), path None when there are none."""
+    orders_df = fetch_orders(source)
+    if orders_df.empty:
+        return orders_df, None
+    store.write_bytes(rel, orders_df.to_csv(index=False, sep=sep).encode("utf-8"))
+    return orders_df, str(store.local_path(rel))

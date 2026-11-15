@@ -57,3 +57,5 @@ pywin32>=312; sys_platform == "win32"  # win32print RAW spooling (Windows only)
 # Supabase fork (shared/store_supabase.py, shared/db_auth.py)
 supabase==2.34.1
 keyring==25.7.0
+# Shopify order source (shopify_tool/order_sources) calls the Admin GraphQL API directly
+httpx==0.28.1

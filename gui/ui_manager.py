@@ -503,6 +503,7 @@ class UIManager:
                 mw._analysis_running, mw._analysis_step, mw._analysis_cancelling
             ),
             now=datetime.now().astimezone(),
+            can_pull=bool(config.get("order_source")),
         )
         mw.run_analysis_button.setEnabled(state["run"]["enabled"])
         mw.setup_bridge.set_state(state)

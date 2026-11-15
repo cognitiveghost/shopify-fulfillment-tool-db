@@ -440,6 +440,7 @@ class MainWindow(QMainWindow):
             lambda kind: getattr(self.file_handler, f"select_{kind}_file")()
         )
         setup.folderRequested.connect(lambda kind: self.file_handler.select_folder(kind))
+        setup.pullRequested.connect(lambda: self.file_handler.pull_orders())
         setup.clearRequested.connect(lambda kind: self.file_handler.clear_file(kind))
         setup.fixRequested.connect(self._fix_file_problem)
         setup.memoryToggled.connect(self._on_inventory_memory_toggled)
