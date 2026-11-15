@@ -105,10 +105,26 @@ cat > "$REPO/.vscode/launch.json" <<'EOF'
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "env": {"QT_QPA_PLATFORM": ""}
+        },
+        {
+            "name": "Run app (local Supabase)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/gui_main.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "envFile": "${workspaceFolder}/.vscode/local-db.env",
+            "env": {"QT_QPA_PLATFORM": "", "FULFILLMENT_SERVER_PATH": "${workspaceFolder}/dev-server"}
         }
     ]
 }
 EOF
+
+# The local stack's URL and anon key, for "Run app (local Supabase)". Needs `supabase start`.
+if command -v supabase >/dev/null && supabase status -o env >/dev/null 2>&1; then
+    supabase status -o env | tr -d '"' \
+        | sed -n 's/^API_URL=/FULFILLMENT_DB_URL=/p; s/^ANON_KEY=/FULFILLMENT_DB_KEY=/p' > "$REPO/.vscode/local-db.env"
+fi
 
 echo "vscode: .vscode/{settings,launch}.json written"
 echo

@@ -536,9 +536,13 @@ class SessionManager:
                 f"Must be one of {self.SESSION_SUBDIRS}"
             )
 
-        rel = f"{session_rel(self.store, session_path)}/{subdir_name}"
+        session = session_rel(self.store, session_path)
+        rel = f"{session}/{subdir_name}"
 
-        if not self.store.exists(rel):
+        # On Supabase folders are implicit (exist only once they hold a file),
+        # so a session's layout folders exist whenever the session does.
+        implicit = self.store.derived_indexes and self.store.exists(session)
+        if not (implicit or self.store.exists(rel)):
             raise SessionManagerError(f"Subdirectory not found: {self.store.local_path(rel)}")
 
         return self.store.local_path(rel)
