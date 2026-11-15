@@ -43,6 +43,14 @@ def test_two_concurrent_claims_of_one_session_name_one_wins(env, supabase_user, 
     assert sorted(wins) == [False, True]
 
 
+def test_new_session_has_its_layout_folders_before_any_file_is_written(env):
+    # Supabase folders are implicit: input/ is empty until the orders file is copied into it
+    _store, _pm, sm = env
+    session_path = sm.create_session("ZED")
+    assert sm.get_input_dir(session_path).name == "input"
+    assert sm.get_analysis_dir(session_path).name == "analysis"
+
+
 def test_create_session_analysis_roundtrip_withdraw_archive(env, tmp_path):
     store, pm, sm = env
     session_path = sm.create_session("ZED")
