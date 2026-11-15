@@ -263,6 +263,7 @@ def setup_state(
     strategy: str,
     run: RunFacts,
     now: datetime,
+    can_pull: bool = False,
 ) -> dict:
     """The one map the Setup page draws. Spec section 4.2 and 4.3."""
     if not connected and session is None:
@@ -389,6 +390,7 @@ def setup_state(
         "client": client,
         "server_path": server_path,
         "session": session_out,
+        "can_pull": can_pull,
         "files": {
             "orders": _card(orders, False),
             "stock": _card(stock, memory_covers),

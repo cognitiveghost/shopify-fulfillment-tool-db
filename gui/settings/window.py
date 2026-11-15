@@ -325,7 +325,11 @@ class SettingsWindow(QDialog):
         client = str(self.client_id)
         column_mappings = self.config_data.get("column_mappings", {})
         drafts = {
-            "general": GeneralDraft(self.config_data.get("settings", {}), client),
+            "general": GeneralDraft(
+                self.config_data.get("settings", {}),
+                client,
+                self.config_data.get("order_source"),
+            ),
             "orders": OrdersDraft(
                 column_mappings,
                 self.config_data.get("courier_mappings", {}),

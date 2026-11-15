@@ -34,6 +34,7 @@ class SetupBridge(PageBridge):
     newSessionRequested = Signal()
     recentRequested = Signal()
     connectionRequested = Signal()
+    pullRequested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -99,6 +100,10 @@ class SetupBridge(PageBridge):
     @Slot()
     def openRecent(self) -> None:
         self.recentRequested.emit()
+
+    @Slot()
+    def pullOrders(self) -> None:
+        self.pullRequested.emit()
 
     @Slot()
     def openConnection(self) -> None:

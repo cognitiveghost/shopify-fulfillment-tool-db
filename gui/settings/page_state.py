@@ -73,13 +73,14 @@ THRESHOLD_HINT = N_(
     "are allocated."
 )
 THRESHOLD_PROBLEM = N_("Type a whole number, 0 or more.")
+STORE_PROBLEM = N_("Enter both the shop and the access token, or leave both empty.")
 _WHOLE = re.compile(r"[0-9]+")
 
 
 class GeneralDraft(PageContract):
     """Delimiters and the low-stock threshold, stored under config_data["settings"]."""
 
-    def __init__(self, settings: dict, client: str):
+    def __init__(self, settings: dict, client: str, order_source: dict | None = None):
         # Held by reference so collect() can update it in place: the window
         # assigns collect()'s value straight over config_data[key], so a fresh
         # dict here would drop every key this page does not draw.
@@ -94,6 +95,10 @@ class GeneralDraft(PageContract):
             self.mode[kind] = _MODE_OF.get(stored, OTHER)
             self.char[kind] = "" if stored in _MODE_OF else str(stored)
         self.threshold = str(settings.get("low_stock_threshold", 5))
+        # The store a client's orders are pulled from; Shopify is the only platform.
+        self._had_source = bool(order_source)
+        self.shop = str((order_source or {}).get("shop") or "")
+        self.token = str((order_source or {}).get("token") or "")
 
     def apply(self, action: str, args) -> bool:
         if action == "delimiter" and _shaped(args, str, str):
@@ -108,6 +113,12 @@ class GeneralDraft(PageContract):
             if kind not in KINDS or self.char[kind] == text:
                 return False
             self.char[kind] = text
+            return True
+        if action in ("order_shop", "order_token") and _shaped(args, str):
+            name = action.removeprefix("order_")
+            if getattr(self, name) == args[0]:
+                return False
+            setattr(self, name, args[0])
             return True
         if action == "threshold" and _shaped(args, str):
             if self.threshold == args[0]:
@@ -131,6 +142,8 @@ class GeneralDraft(PageContract):
         ]
         if self._bad_threshold():
             found.append((N_("Low-stock threshold"), "threshold", THRESHOLD_PROBLEM))
+        if bool(self.shop.strip()) != bool(self.token.strip()):
+            found.append((N_("Store connection"), "order-shop", STORE_PROBLEM))
         return found
 
     def _bad_threshold(self) -> bool:
@@ -159,7 +172,15 @@ class GeneralDraft(PageContract):
                 "low_stock_threshold": int(self.threshold.strip()),
             }
         )
-        return {"settings": self._settings}
+        collected = {"settings": self._settings}
+        if self.shop.strip() or self._had_source:
+            # None clears a source the user emptied; load_shopify_config reads it as unset.
+            collected["order_source"] = (
+                {"platform": "shopify", "shop": self.shop.strip(), "token": self.token.strip()}
+                if self.shop.strip()
+                else None
+            )
+        return collected
 
     def _delimiter_view(self, kind: str) -> dict:
         mode = self.mode[kind]
@@ -198,6 +219,18 @@ class GeneralDraft(PageContract):
                     client=self.client,
                 ),
                 "alerts_text": _("When a SKU is flagged as low stock in Results."),
+                "store_text": _(
+                    "The Shopify store that Pull orders reads {client}'s open orders from. "
+                    "The token needs read_orders access.",
+                    client=self.client,
+                ),
+                "store": {
+                    "shop": self.shop,
+                    "token": self.token,
+                    "problem": _(STORE_PROBLEM)
+                    if bool(self.shop.strip()) != bool(self.token.strip())
+                    else "",
+                },
                 "delimiters": [self._delimiter_view(kind) for kind in KINDS],
                 "threshold": {
                     "value": self.threshold,

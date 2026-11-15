@@ -261,13 +261,15 @@ def test_a_mapping_page_offers_read_columns(qtbot, page):
 # --- General -----------------------------------------------------------------
 
 
-def test_general_draws_two_cards_with_their_rows(qtbot, page):
+def test_general_draws_its_cards_with_their_rows(qtbot, page):
     view, bridge = page
     _show(qtbot, view, bridge, general())
-    assert _texts(qtbot, view, ".card-title") == ["CSV files", "Stock alerts"]
+    assert _texts(qtbot, view, ".card-title") == ["CSV files", "Store connection", "Stock alerts"]
     assert _texts(qtbot, view, ".card-label") == [
         "Stock CSV delimiter",
         "Orders CSV delimiter",
+        "Shop",
+        "Access token",
         "Low-stock threshold",
     ]
     assert _texts(qtbot, view, '[data-row="delimiter-stock"] .segment') == [

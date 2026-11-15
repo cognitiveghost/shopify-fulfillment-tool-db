@@ -99,6 +99,11 @@ function panel(s) {
 
 // --- file card ---------------------------------------------------------------
 
+function pullButton(kind, locked) {
+  if (kind !== "orders" || !page.state || !page.state.can_pull) return "";
+  return `<button class="btn secondary" type="button" data-act="pull-orders" data-kind="orders" data-key="orders-pull"${off(locked)}>${t("Pull orders")}</button>`;
+}
+
 function dropzone(kind, locked) {
   return `<div class="dropzone">
     ${svg(GLYPH.upload, "dropzone-glyph")}
@@ -106,6 +111,7 @@ function dropzone(kind, locked) {
     <div class="dropzone-buttons">
       <button class="btn secondary" type="button" data-act="choose-file" data-kind="${kind}" data-key="${kind}-file"${off(locked)}>${t("Choose file…")}</button>
       <button class="btn secondary" type="button" data-act="choose-folder" data-kind="${kind}" data-key="${kind}-folder"${off(locked)}>${t("Choose folder…")}</button>
+      ${pullButton(kind, locked)}
     </div>
     <span class="dropzone-note">${t("A folder merges every CSV in it into one input.")}</span>
   </div>`;
@@ -157,6 +163,7 @@ function fileCard(kind, card, locked) {
     card.state === "missing"
       ? dropzone(kind, locked)
       : fileBody(kind, card, locked) +
+        `<div class="dropzone-buttons">${pullButton(kind, locked)}</div>` +
         (card.state === "problem" ? problemBlock(kind, card.problem) : "");
   // No data-file-kind while a run holds the inputs: a drop then finds no card.
   const target = locked ? "" : ` data-file-kind="${kind}"`;
@@ -301,6 +308,7 @@ function onClick(event) {
   switch (el.dataset.act) {
     case "choose-file": bridge.chooseFile(kind); break;
     case "choose-folder": bridge.chooseFolder(kind); break;
+    case "pull-orders": bridge.pullOrders(); break;
     case "clear": bridge.clearFile(kind); break;
     case "fix": bridge.fixProblem(kind); break;
     case "memory": bridge.setMemory(el.getAttribute("aria-checked") !== "true"); break;

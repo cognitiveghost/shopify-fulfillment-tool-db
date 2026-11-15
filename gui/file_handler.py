@@ -4,17 +4,20 @@ import tempfile
 from pathlib import Path
 
 import pandas as pd
+from PySide6.QtCore import QThreadPool
 from PySide6.QtWidgets import QFileDialog
 
-from gui.components import ConfirmDialog
+from gui.components import ConfirmDialog, show_error, toast
 from gui.setup_state import MAPPING_PAGE
+from gui.worker import Worker
 from shared.i18n import N_, _, _n
-from shopify_tool import core
+from shopify_tool import core, session_state
 from shopify_tool.csv_utils import (
     AUTO_DELIMITER,
     merge_csv_files,
     resolve_delimiter,
 )
+from shopify_tool.order_sources import OrderSourceError, fetch_orders
 
 # Folder mode used to ask for these with two checkboxes each, in the widget
 # cluster Bundle 5 deleted. Spec §10.3 puts them back inside the loaded slot;
@@ -127,6 +130,63 @@ class FileHandler:
         elif not self._stock_file_usable(path):
             return
         self.validate_file(kind)
+
+    def pull_orders(self) -> None:
+        """Fetch the client's open orders from its store, then load them as a CSV was.
+
+        The fetch runs in a worker; the result is written to the session's
+        input/orders_export.csv (replacing any earlier input) and goes down the
+        same route as a picked file.
+        """
+        if not self.mw.session_path:
+            self.log.warning("pull_orders called with no session open")
+            return
+        source = (self.mw.active_profile_config or {}).get("order_source")
+        if not source:
+            show_error(
+                self.mw,
+                _("No store connected"),
+                _("No store connected for this client. Set it in Client settings."),
+            )
+            return
+        worker = Worker(fetch_orders, source)
+        shop = source.get("shop", "")
+        worker.signals.result.connect(lambda df: self._on_orders_pulled(df, shop))
+        worker.signals.error.connect(self._on_pull_failed)
+        self._pull_worker = worker  # see Worker: a bare local is collected early
+        QThreadPool.globalInstance().start(worker)
+
+    def _on_pull_failed(self, error) -> None:
+        exc = error[1] if isinstance(error, tuple) else error
+        if not isinstance(exc, OrderSourceError):
+            self.log.error("Pull orders failed: %s", error[2] if isinstance(error, tuple) else error)
+        show_error(
+            self.mw,
+            _("Orders weren't pulled"),
+            str(exc) if isinstance(exc, OrderSourceError) else _("Details are in Logs."),
+        )
+
+    def _on_orders_pulled(self, orders_df, shop: str) -> None:
+        store = self.mw.profile_manager.store
+        rel = (
+            f"{session_state.session_rel(store, self.mw.session_path)}/input/orders_export.csv"
+        )
+        try:
+            store.write_bytes(rel, orders_df.to_csv(index=False).encode("utf-8"))
+        except Exception:
+            self.log.exception("Pulled orders could not be written to the session")
+            show_error(self.mw, _("Orders weren't pulled"), _("Details are in Logs."))
+            return
+        self.load_file("orders", str(store.local_path(rel)))
+        toast(
+            self.mw,
+            _(
+                "Pulled {orders} orders ({lines} lines) from {shop}",
+                orders=orders_df["Name"].nunique(),
+                lines=len(orders_df),
+                shop=shop,
+            ),
+        )
 
     def _fail(self, kind: str, path, title: str, text: str, fix_page: str = "") -> None:
         """The file cannot be used: say so in its card and forget its path."""

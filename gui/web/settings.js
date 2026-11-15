@@ -142,6 +142,22 @@ function generalPage(g) {
     ${cardHead(t("CSV files"), esc(g.csv_text))}
     ${g.delimiters.map(delimiterRow).join("")}
   </section>
+  <section class="card" data-card="store">
+    ${cardHead(t("Store connection"), esc(g.store_text))}
+    <div class="card-row" data-row="order-shop">
+      <span class="card-label">${t("Shop")}</span>
+      <div class="card-control">
+        <input class="field mono${g.store.problem ? " invalid" : ""}" type="text" placeholder="my-shop.myshopify.com" value="${esc(g.store.shop)}" aria-label="${t("Shop")}" data-input="order_shop" data-key="order-shop">
+        ${g.store.problem ? problemLine(g.store.problem) : ""}
+      </div>
+    </div>
+    <div class="card-row" data-row="order-token">
+      <span class="card-label">${t("Access token")}</span>
+      <div class="card-control">
+        <input class="field mono" type="password" autocomplete="off" value="${esc(g.store.token)}" aria-label="${t("Access token")}" data-input="order_token" data-key="order-token">
+      </div>
+    </div>
+  </section>
   <section class="card" data-card="alerts">
     ${cardHead(t("Stock alerts"), esc(g.alerts_text))}
     <div class="card-row" data-row="threshold">
@@ -516,6 +532,7 @@ function onInput(event) {
   if (rulesInput(data, el, bridge)) return;
   if (Object.values(LIST_PAGES).some((fns) => fns[2](data, el, bridge))) return;
   if (data.input === "threshold") bridge.edit("threshold", [el.value]);
+  else if (data.input === "order_shop" || data.input === "order_token") bridge.edit(data.input, [el.value]);
   else if (data.input === "delimiter_char") bridge.edit("delimiter_char", [data.kind, el.value]);
   else if (data.input === "courier_pattern") bridge.edit("courier_pattern", [data.index, el.value]);
 }
