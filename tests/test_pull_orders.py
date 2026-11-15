@@ -139,3 +139,44 @@ def test_only_a_configured_client_offers_the_button(main_window):
     main_window.active_profile_config.pop("order_source")
     main_window.ui_manager.refresh_setup()
     assert main_window.setup_bridge.state["can_pull"] is False
+
+
+def test_pull_writes_with_the_clients_delimiter(main_window, monkeypatch, errors):
+    main_window.active_profile_config.setdefault("settings", {})["orders_csv_delimiter"] = ";"
+    monkeypatch.setattr("gui.file_handler.fetch_orders", lambda source: _orders(3))
+
+    _pull(main_window)
+
+    assert not errors
+    assert _input(main_window).splitlines()[0] == ";".join(SHOPIFY_CSV_HEADERS)
+    assert main_window.orders_slot.is_valid
+    assert main_window.orders_slot.rows == 3
+
+
+def test_a_pull_finishing_after_the_session_changed_is_not_loaded(main_window, monkeypatch, errors):
+    pulled_for = main_window.session_path
+    other = main_window.session_manager.create_session("acme")
+
+    def fetch_then_switch(source):
+        main_window.session_path = other  # the user opened another session meanwhile
+        return _orders(2)
+
+    monkeypatch.setattr("gui.file_handler.fetch_orders", fetch_then_switch)
+
+    _pull(main_window)
+
+    assert main_window.orders_file_path is None
+    main_window.session_path = pulled_for
+    assert len(_input(main_window).splitlines()) == 3  # kept in the session it was for
+
+
+def test_no_open_orders_says_so_and_loads_nothing(main_window, monkeypatch, errors):
+    shown = []
+    monkeypatch.setattr("gui.file_handler.toast", lambda _src, text: shown.append(text))
+    monkeypatch.setattr("gui.file_handler.fetch_orders", lambda source: _orders(0))
+
+    _pull(main_window)
+
+    assert not errors
+    assert shown == ["No open unfulfilled orders in fulfil-trial.myshopify.com"]
+    assert main_window.orders_file_path is None

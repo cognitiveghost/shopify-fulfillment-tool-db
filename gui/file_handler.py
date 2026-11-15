@@ -82,6 +82,7 @@ class FileHandler:
         """
         self.mw = main_window
         self.log = logging.getLogger(__name__)
+        self._pull_worker = None  # the pull in flight, so a second click waits for it
 
     def _delimiter_for(self, kind: str, path: str) -> str:
         """The delimiter `path` is read with: the client's override, or Auto."""
@@ -134,14 +135,17 @@ class FileHandler:
     def pull_orders(self) -> None:
         """Fetch the client's open orders from its store, then load them as a CSV was.
 
-        The fetch runs in a worker; the result is written to the session's
-        input/orders_export.csv (replacing any earlier input) and goes down the
-        same route as a picked file.
+        The fetch and the write to the session's input/orders_export.csv
+        (replacing any earlier input) run in a worker; the file then goes down
+        the same route as a picked one.
         """
         if not self.mw.session_path:
             self.log.warning("pull_orders called with no session open")
             return
-        source = (self.mw.active_profile_config or {}).get("order_source")
+        if self._pull_worker is not None:
+            return
+        config = self.mw.active_profile_config or {}
+        source = config.get("order_source")
         if not source:
             show_error(
                 self.mw,
@@ -149,35 +153,40 @@ class FileHandler:
                 _("No store connected for this client. Set it in Client settings."),
             )
             return
-        worker = Worker(fetch_orders, source)
+        store = self.mw.profile_manager.store
+        session_path = self.mw.session_path
+        rel = f"{session_state.session_rel(store, session_path)}/input/orders_export.csv"
+        # Written with the delimiter the client's override will read it back with.
+        override = config.get("settings", {}).get("orders_csv_delimiter")
+        sep = override if override and override != AUTO_DELIMITER else ","
         shop = source.get("shop", "")
-        worker.signals.result.connect(lambda df: self._on_orders_pulled(df, shop))
+        worker = Worker(_pull_into_session, source, store, rel, sep)
+        worker.signals.result.connect(
+            lambda result: self._on_orders_pulled(result, shop, session_path)
+        )
         worker.signals.error.connect(self._on_pull_failed)
-        self._pull_worker = worker  # see Worker: a bare local is collected early
+        worker.signals.finished.connect(lambda: setattr(self, "_pull_worker", None))
+        self._pull_worker = worker
         QThreadPool.globalInstance().start(worker)
 
     def _on_pull_failed(self, error) -> None:
-        exc = error[1] if isinstance(error, tuple) else error
-        if not isinstance(exc, OrderSourceError):
-            self.log.error("Pull orders failed: %s", error[2] if isinstance(error, tuple) else error)
-        show_error(
-            self.mw,
-            _("Orders weren't pulled"),
-            str(exc) if isinstance(exc, OrderSourceError) else _("Details are in Logs."),
-        )
-
-    def _on_orders_pulled(self, orders_df, shop: str) -> None:
-        store = self.mw.profile_manager.store
-        rel = (
-            f"{session_state.session_rel(store, self.mw.session_path)}/input/orders_export.csv"
-        )
-        try:
-            store.write_bytes(rel, orders_df.to_csv(index=False).encode("utf-8"))
-        except Exception:
-            self.log.exception("Pulled orders could not be written to the session")
-            show_error(self.mw, _("Orders weren't pulled"), _("Details are in Logs."))
+        _exc_type, exc, details = error
+        if isinstance(exc, OrderSourceError):
+            show_error(self.mw, _("Orders weren't pulled"), str(exc))
             return
-        self.load_file("orders", str(store.local_path(rel)))
+        self.log.error("Pull orders failed: %s", details)
+        show_error(self.mw, _("Orders weren't pulled"), _("Details are in Logs."))
+
+    def _on_orders_pulled(self, result, shop: str, session_path) -> None:
+        orders_df, path = result
+        if self.mw.session_path != session_path:
+            # Written into the session it was pulled for; this one never asked.
+            self.log.info("Pulled orders arrived after the session changed; not loaded")
+            return
+        if path is None:
+            toast(self.mw, _("No open unfulfilled orders in {shop}", shop=shop))
+            return
+        self.load_file("orders", path)
         toast(
             self.mw,
             _(
@@ -798,3 +807,12 @@ class FileHandler:
         self.log.info(f"Saved merged file: {merged_path}")
 
         return str(merged_path), len(merged_df), skipped
+
+
+def _pull_into_session(source, store, rel: str, sep: str):
+    """Worker body: (orders, local path of the written input), path None when there are none."""
+    orders_df = fetch_orders(source)
+    if orders_df.empty:
+        return orders_df, None
+    store.write_bytes(rel, orders_df.to_csv(index=False, sep=sep).encode("utf-8"))
+    return orders_df, str(store.local_path(rel))

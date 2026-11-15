@@ -74,7 +74,10 @@ THRESHOLD_HINT = N_(
 )
 THRESHOLD_PROBLEM = N_("Type a whole number, 0 or more.")
 STORE_PROBLEM = N_("Enter both the shop and the access token, or leave both empty.")
+SHOP_PROBLEM = N_("Type the shop as <name>.myshopify.com.")
 _WHOLE = re.compile(r"[0-9]+")
+# The token is sent to this host, so only a Shopify store address is accepted.
+_SHOP = re.compile(r"[a-z0-9][a-z0-9-]*\.myshopify\.com")
 
 
 class GeneralDraft(PageContract):
@@ -142,9 +145,17 @@ class GeneralDraft(PageContract):
         ]
         if self._bad_threshold():
             found.append((N_("Low-stock threshold"), "threshold", THRESHOLD_PROBLEM))
-        if bool(self.shop.strip()) != bool(self.token.strip()):
-            found.append((N_("Store connection"), "order-shop", STORE_PROBLEM))
+        if self._store_problem():
+            found.append((N_("Store connection"), "order-shop", self._store_problem()))
         return found
+
+    def _store_problem(self) -> str:
+        shop = self.shop.strip()
+        if bool(shop) != bool(self.token.strip()):
+            return STORE_PROBLEM
+        if shop and not _SHOP.fullmatch(shop.lower()):
+            return SHOP_PROBLEM
+        return ""
 
     def _bad_threshold(self) -> bool:
         return not _WHOLE.fullmatch(self.threshold.strip())
@@ -176,7 +187,11 @@ class GeneralDraft(PageContract):
         if self.shop.strip() or self._had_source:
             # None clears a source the user emptied; load_shopify_config reads it as unset.
             collected["order_source"] = (
-                {"platform": "shopify", "shop": self.shop.strip(), "token": self.token.strip()}
+                {
+                    "platform": "shopify",
+                    "shop": self.shop.strip().lower(),
+                    "token": self.token.strip(),
+                }
                 if self.shop.strip()
                 else None
             )
@@ -227,9 +242,7 @@ class GeneralDraft(PageContract):
                 "store": {
                     "shop": self.shop,
                     "token": self.token,
-                    "problem": _(STORE_PROBLEM)
-                    if bool(self.shop.strip()) != bool(self.token.strip())
-                    else "",
+                    "problem": _(self._store_problem()) if self._store_problem() else "",
                 },
                 "delimiters": [self._delimiter_view(kind) for kind in KINDS],
                 "threshold": {

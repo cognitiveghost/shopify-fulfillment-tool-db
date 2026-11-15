@@ -12,9 +12,11 @@ MAX_THROTTLE_RETRIES = 5
 _TIMEOUT_SECONDS = 30.0
 _sleep = time.sleep  # tests patch this
 
+# Page sizes keep the requested cost under Shopify's 1,000-point cap per query:
+# each order costs ~10 points plus one per line item asked for, so 25 x (10 + 20).
 _ORDERS_QUERY = """
 query Orders($cursor: String) {
-  orders(first: 100, after: $cursor, query: "fulfillment_status:unfulfilled status:open") {
+  orders(first: 25, after: $cursor, query: "fulfillment_status:unfulfilled status:open") {
     pageInfo { hasNextPage endCursor }
     nodes {
       id
@@ -26,7 +28,7 @@ query Orders($cursor: String) {
       totalPriceSet { shopMoney { amount } }
       shippingLine { title }
       shippingAddress { name countryCodeV2 }
-      lineItems(first: 50) {
+      lineItems(first: 20) {
         pageInfo { hasNextPage endCursor }
         nodes { sku name quantity }
       }
@@ -132,7 +134,8 @@ def _seconds_to_restore(extensions):
     cost = (extensions or {}).get("cost") or {}
     status = cost.get("throttleStatus") or {}
     deficit = cost.get("requestedQueryCost", 0) - status.get("currentlyAvailable", 0)
-    return max(deficit, 0) / (status.get("restoreRate") or 1.0)
+    # At least a second, so a throttle reply without cost data still backs off.
+    return max(deficit / (status.get("restoreRate") or 1.0), 1.0)
 
 
 def _order_rows(order, lines):

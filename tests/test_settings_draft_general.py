@@ -293,3 +293,16 @@ def test_emptying_a_saved_store_clears_it():
     draft.apply("order_shop", [""])
     draft.apply("order_token", [""])
     assert draft.collect()["order_source"] is None
+
+
+def test_a_shop_that_is_not_a_shopify_store_is_refused():
+    # The token is sent to the shop's host, so a typo must not receive it.
+    draft = GeneralDraft({}, "ACME")
+    draft.apply("order_shop", ["evil.example.com"])
+    draft.apply("order_token", ["shpat_x"])
+    ok, problems = draft.validate()
+    assert ok is False
+    assert problems == ["Store connection: Type the shop as <name>.myshopify.com."]
+    draft.apply("order_shop", ["My-Shop.myshopify.com"])
+    assert draft.validate()[0] is True
+    assert draft.collect()["order_source"]["shop"] == "my-shop.myshopify.com"

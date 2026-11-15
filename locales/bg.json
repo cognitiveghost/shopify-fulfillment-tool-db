@@ -508,6 +508,7 @@
   "No filters": "Без филтри",
   "No group": "Без група",
   "No notes on this order.": "Няма бележки към тази поръчка.",
+  "No open unfulfilled orders in {shop}": "Няма отворени неизпълнени поръчки в {shop}",
   "No order in this analysis matches.": "Никоя поръчка в този анализ не съвпада.",
   "No order selected": "Няма избрана поръчка",
   "No orders marked fulfillable: not enough stock for {n} order": [
@@ -976,6 +977,7 @@
   "Type the category's name.": "Въведете името на категорията.",
   "Type the character that separates the columns.": "Въведете знака, който разделя колоните.",
   "Type the set's SKU.": "Въведете SKU на комплекта.",
+  "Type the shop as <name>.myshopify.com.": "Въведете магазина като <име>.myshopify.com.",
   "Undo": "Отмени",
   "Undo didn't complete": "Отмяната не завърши",
   "Undo last operation (Ctrl+Z)": "Отмени последната операция (Ctrl+Z)",

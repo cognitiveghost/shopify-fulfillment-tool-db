@@ -293,3 +293,9 @@ def test_fetch_orders_shopify_dispatches_with_shop_and_token(monkeypatch):
 
     assert calls == [(SHOP, TOKEN)]
     assert result is sentinel
+
+
+def test_a_throttle_without_cost_data_still_waits():
+    from shopify_tool.order_sources.shopify import _seconds_to_restore
+
+    assert _seconds_to_restore(None) == 1.0
