@@ -299,3 +299,37 @@ def test_virtual_session_folders_exist_when_they_have_children(store):
     store.write_json(S + "packing/list1/packing_state.json", {"progress": {}})
     assert store.exists(S + "packing_lists") and store.exists(S + "packing")
     assert store.exists(S + "packing/list1")
+
+
+def _seed_overview(store):
+    c = "Sessions/CLIENT_X/"
+    store.write_json(c + "s1/session_info.json", {"pc_name": "PC-A"})
+    store.write_json(c + "s1/packing_lists/U.json", {"created_at": "t1", "total_orders": 2, "total_items": 3, "orders": []})
+    store.write_json(c + "s1/packing_lists/withdrawn/W.json", {"orders": []})
+    store.write_json(c + "s2/packing_lists/S.json", {"created_at": "t1", "total_orders": 2, "total_items": 3, "orders": []})
+    store.write_json(c + "s2/packing/S/packing_state.json",
+                     {"worker_id": "w1", "progress": {"total_orders": 2}, "skipped_orders": ["9"], "orders": [1]})
+    store.acquire_list_lock(c + "s2/packing/S", "PC-B", "u")
+    store.write_json(c + "s3/packing_lists/F.json", {"created_at": "t1", "total_orders": 2, "total_items": 3, "orders": []})
+    store.write_json(c + "s3/packing/F/session_summary.json", {"total_orders": 2, "completed_orders": 2})
+
+
+def test_packing_overview_rows(store):
+    _seed_overview(store)
+    rows = store.packing_overview("X")
+    assert [(r["session_name"], r["list_name"]) for r in rows] == [("s1", "U"), ("s2", "S"), ("s3", "F")]
+    u, s, f = rows
+    assert (u["started"], u["state"], u["summary"], u["lock"]) == (False, None, None, None)
+    assert u["session_info"] == {"pc_name": "PC-A"}
+    assert u["packing_list"] == {"created_at": "t1", "total_orders": 2, "total_items": 3}
+    assert s["started"] is True
+    assert s["state"] == {"worker_id": "w1", "progress": {"total_orders": 2}, "skipped_orders": ["9"]}
+    assert s["lock"].holder_pc == "PC-B"
+    assert s["session_info"] is None
+    assert s["work_rel"] == "Sessions/CLIENT_X/s2/packing/S"
+    assert f["summary"] == {"total_orders": 2, "completed_orders": 2}
+    assert f["state"] is None
+
+
+def test_packing_overview_unknown_client_empty(store):
+    assert store.packing_overview("NOPE") == []

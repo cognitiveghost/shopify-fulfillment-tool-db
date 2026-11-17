@@ -27,6 +27,9 @@ LOCK_READ_ATTEMPTS = 3
 LOCK_READ_RETRY_SECONDS = 0.2
 SESSION_INDEX = "session_index.json"  # per-client cache behind FileStore.query_sessions
 SESSION_INFO = "session_info.json"
+PACKING_LIST_KEYS = ("courier", "filters_applied", "created_at", "total_orders", "total_items")
+PACKING_STATE_KEYS = ("worker_id", "worker_name", "pc_name", "started_at", "last_updated", "progress",
+                      "skipped_orders")
 
 logger = logging.getLogger("ShopifyToolLogger")
 
@@ -34,6 +37,11 @@ logger = logging.getLogger("ShopifyToolLogger")
 def _now() -> datetime:
     """Current aware time; tests patch this."""
     return datetime.now().astimezone()
+
+
+def _trim(doc: dict, keys: tuple[str, ...]) -> dict:
+    """Only the keys `doc` has; an absent key stays absent."""
+    return {k: doc[k] for k in keys if k in doc}
 
 
 class StoreError(Exception):
@@ -131,6 +139,15 @@ class Store:
 
         Sessions with no or unreadable session_info are skipped. Unordered. An unknown
         client gives []; a failed read raises StoreError, never [].
+        """
+        raise NotImplementedError
+
+    def packing_overview(self, client_id: str) -> list[dict]:
+        """One row per live packing list of the client, sorted by (session_name, list_name).
+
+        Row keys: session_name, list_name, work_rel, packing_list (trimmed to PACKING_LIST_KEYS),
+        started, state (trimmed to PACKING_STATE_KEYS, or None), summary, lock (LockInfo or None),
+        session_info ({"pc_name": ...} or None). An unknown client gives []; a failed read raises StoreError.
         """
         raise NotImplementedError
 
@@ -323,6 +340,58 @@ class FileStore(Store):
             raise StoreError(client_rel) from e
         return [{k: v for k, v in e.items() if not k.startswith("_")}
                 for e in entries if not e.get("_no_session_info")]
+
+    # --- packing overview: the Packer's registry walk, as one read ---
+    def packing_overview(self, client_id):
+        client_rel = f"Sessions/CLIENT_{client_id}"
+        if not self.exists(client_rel):
+            return []
+        rows = []
+        for session in self.list_dir(client_rel):
+            if session.startswith(".") or session in ("registry_index.json", SESSION_INDEX):
+                continue
+            rows.extend(self._session_packing_rows(client_rel, session))
+        return sorted(rows, key=lambda r: (r["session_name"], r["list_name"]))
+
+    def _session_packing_rows(self, client_rel, session):
+        session_rel = f"{client_rel}/{session}"
+        info_rel = f"{session_rel}/{SESSION_INFO}"
+        session_info = {"pc_name": self.read_json(info_rel).get("pc_name")} if self.exists(info_rel) else None
+        lists_rel = f"{session_rel}/packing_lists"
+        barcodes_rel = f"{session_rel}/barcodes"
+        rows = []
+        if self.exists(lists_rel):
+            for name in self.list_dir(lists_rel):
+                if not name.endswith(".json"):
+                    continue
+                list_name = name.removesuffix(".json")
+                doc = self.read_json(f"{lists_rel}/{name}")
+                packing_list = _trim({"total_orders": len(doc.get("orders", [])), **doc}, PACKING_LIST_KEYS)
+                rows.append(self._packing_row(session, list_name, f"{session_rel}/packing/{list_name}",
+                                              packing_list, session_info))
+        elif self.exists(f"{barcodes_rel}/packing_state.json"):  # legacy Excel workflow
+            state = self.read_json(f"{barcodes_rel}/packing_state.json")
+            rows.append(self._packing_row(session, state.get("packing_list_name", "unknown"), barcodes_rel,
+                                          None, session_info))
+        return rows
+
+    def _packing_row(self, session, list_name, work_rel, packing_list, session_info):
+        state = self._read_if_exists(f"{work_rel}/packing_state.json")
+        started = self.exists(work_rel)
+        return {
+            "session_name": session,
+            "list_name": list_name,
+            "work_rel": work_rel,
+            "packing_list": packing_list,
+            "started": started,
+            "state": _trim(state or {}, PACKING_STATE_KEYS) or None,
+            "summary": self._read_if_exists(f"{work_rel}/session_summary.json"),
+            "lock": self.lock_info(work_rel) if started else None,
+            "session_info": session_info,
+        }
+
+    def _read_if_exists(self, rel):
+        return self.read_json(rel) if self.exists(rel) else None
 
     def _index_lock(self, client_rel: str) -> Path:
         return self._p(f"{client_rel}/{SESSION_INDEX}.lock")
