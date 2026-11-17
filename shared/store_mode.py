@@ -29,11 +29,14 @@ def open_store(
     *,
     fallback_root: str,
     cache_dir: Path,
-    prompt: Callable[[], tuple[str, str] | None],
+    prompt: Callable[[str | None], tuple[str, str] | None],
     outbox_pending: bool = False,
     pc: str | None = None,
 ) -> tuple[Mode, Store | None]:
-    """OFFLINE_BUFFER returns no store: the Packer builds its BufferedStore over the cache itself."""
+    """OFFLINE_BUFFER returns no store: the Packer builds its BufferedStore over the cache itself.
+
+    db_auth.SignInCancelled propagates: a cancelled sign-in is not "unreachable".
+    """
     client = db_auth.connect(app_name, prompt)
     fallback_ok = os.path.isdir(fallback_root)
     mode = choose_mode(outbox_pending=outbox_pending, supabase_ok=client is not None, fallback_ok=fallback_ok)

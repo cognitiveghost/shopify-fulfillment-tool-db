@@ -3,7 +3,7 @@
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtWidgets import QApplication, QDialog, QLabel
 
 from shared.components.sign_in_dialog import SignInDialog
 
@@ -16,6 +16,18 @@ def qapp():
 def _fill(dialog, email="pack@example.com", password="secret"):
     dialog.email_edit.setText(email)
     dialog.password_edit.setText(password)
+
+
+def test_error_line_hidden_without_error(qapp):
+    dialog = SignInDialog()
+    assert dialog.findChild(QLabel, "SignInError").isHidden()
+
+
+def test_error_line_shows_given_text(qapp):
+    dialog = SignInDialog(error="Wrong email or password. Try again.")
+    label = dialog.findChild(QLabel, "SignInError")
+    assert not label.isHidden()
+    assert label.text() == "Wrong email or password. Try again."
 
 
 def test_ok_stays_disabled_until_both_fields_are_filled(qapp):

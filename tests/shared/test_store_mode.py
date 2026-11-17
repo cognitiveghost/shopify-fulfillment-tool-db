@@ -2,7 +2,7 @@ import itertools
 
 import pytest
 
-from shared import store_mode
+from shared import db_auth, store_mode
 from shared.store import FileStore
 from shared.store_mode import Mode, choose_mode
 
@@ -48,6 +48,15 @@ def test_open_store_pending_outbox_offline_without_store(monkeypatch, tmp_path):
     mode, store = store_mode.open_store(
         "T", fallback_root=str(tmp_path), cache_dir=tmp_path, prompt=lambda: None, outbox_pending=True)
     assert (mode, store) == (Mode.OFFLINE_BUFFER, None)
+
+
+def test_open_store_lets_sign_in_cancelled_through(monkeypatch, tmp_path):
+    def cancelled(app, prompt):
+        raise db_auth.SignInCancelled()
+
+    monkeypatch.setattr(store_mode.db_auth, "connect", cancelled)
+    with pytest.raises(db_auth.SignInCancelled):
+        store_mode.open_store("T", fallback_root=str(tmp_path), cache_dir=tmp_path, prompt=lambda _error: None)
 
 
 def test_open_store_supabase_when_signed_in(monkeypatch, tmp_path):

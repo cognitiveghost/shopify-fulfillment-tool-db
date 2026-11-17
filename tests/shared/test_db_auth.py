@@ -65,14 +65,14 @@ def test_stored_token_means_no_prompt(kr):
     kr.d[("App-db", "refresh_token")] = "old"
     auth = FakeAuth(refresh=lambda t: _session("rotated"))
     prompts = []
-    client = db_auth.connect("App", lambda: prompts.append(1), _factory(auth))
+    client = db_auth.connect("App", lambda _error: prompts.append(1), _factory(auth))
     assert client is not None and prompts == []
     assert kr.d[("App-db", "refresh_token")] == "rotated"
 
 
 def test_background_refresh_saves_the_rotated_token(kr):
     auth = FakeAuth(sign_in=lambda c: _session("first"))
-    assert db_auth.connect("App", lambda: ("a@b.c", "pw"), _factory(auth)) is not None
+    assert db_auth.connect("App", lambda _error: ("a@b.c", "pw"), _factory(auth)) is not None
     for listener in auth.listeners:
         listener("TOKEN_REFRESHED", SimpleNamespace(refresh_token="second"))
     assert kr.d[("App-db", "refresh_token")] == "second"
@@ -82,39 +82,65 @@ def test_no_token_prompts_once_and_saves(kr):
     auth = FakeAuth(sign_in=lambda c: _session("fresh"))
     prompts = []
 
-    def prompt():
-        prompts.append(1)
+    def prompt(error):
+        prompts.append(error)
         return "a@b.c", "pw"
 
     assert db_auth.connect("App", prompt, _factory(auth)) is not None
-    assert len(prompts) == 1 and kr.d[("App-db", "refresh_token")] == "fresh"
+    assert prompts == [None] and kr.d[("App-db", "refresh_token")] == "fresh"
 
 
-def test_cancel_returns_none(kr):
-    assert db_auth.connect("App", lambda: None, _factory(FakeAuth())) is None
+def test_cancel_raises_sign_in_cancelled(kr):
+    with pytest.raises(db_auth.SignInCancelled):
+        db_auth.connect("App", lambda _error: None, _factory(FakeAuth()))
     assert ("App-db", "refresh_token") not in kr.d
 
 
-def test_refused_saved_token_falls_back_to_prompt(kr):
+def test_refused_saved_token_prompts_with_expired_message(kr):
     kr.d[("App-db", "refresh_token")] = "revoked"
 
     def refuse(_):
         raise AuthApiError("bad token", 400, "refresh_token_not_found")
 
+    errors = []
+
+    def prompt(error):
+        errors.append(error)
+        return "a@b.c", "pw"
+
     auth = FakeAuth(refresh=refuse, sign_in=lambda c: _session("new"))
-    assert db_auth.connect("App", lambda: ("a@b.c", "pw"), _factory(auth)) is not None
+    assert db_auth.connect("App", prompt, _factory(auth)) is not None
+    assert errors == ["Your saved sign-in has expired. Sign in again."]
     assert kr.d[("App-db", "refresh_token")] == "new"
 
 
-def test_wrong_password_asks_again(kr):
+def test_wrong_password_asks_again_with_message(kr):
     answers = iter([("a@b.c", "bad"), ("a@b.c", "good")])
+    errors = []
+
+    def prompt(error):
+        errors.append(error)
+        return next(answers)
 
     def sign_in(c):
         if c["password"] == "bad":
             raise AuthApiError("Invalid login", 400, "invalid_credentials")
         return _session("t")
 
-    assert db_auth.connect("App", lambda: next(answers), _factory(FakeAuth(sign_in=sign_in))) is not None
+    assert db_auth.connect("App", prompt, _factory(FakeAuth(sign_in=sign_in))) is not None
+    assert errors == [None, "Wrong email or password. Try again."]
+
+
+def test_keeps_asking_past_five_wrong_passwords(kr):
+    answers = iter([("a@b.c", "bad")] * 6 + [("a@b.c", "good")])
+
+    def sign_in(c):
+        if c["password"] == "bad":
+            raise AuthApiError("Invalid login", 400, "invalid_credentials")
+        return _session("t")
+
+    client = db_auth.connect("App", lambda _error: next(answers), _factory(FakeAuth(sign_in=sign_in)))
+    assert client is not None
 
 
 def test_unreachable_returns_none_quickly(kr):
@@ -122,9 +148,9 @@ def test_unreachable_returns_none_quickly(kr):
         raise httpx.ConnectError("no route")
 
     start = time.monotonic()
-    assert db_auth.connect("App", lambda: ("a@b.c", "pw"), _factory(FakeAuth(sign_in=down))) is None
+    assert db_auth.connect("App", lambda _error: ("a@b.c", "pw"), _factory(FakeAuth(sign_in=down))) is None
     kr.d[("App-db", "refresh_token")] = "t"
-    assert db_auth.connect("App", lambda: None, _factory(FakeAuth(refresh=down))) is None
+    assert db_auth.connect("App", lambda _error: None, _factory(FakeAuth(refresh=down))) is None
     assert time.monotonic() - start < 5
     assert ("App-db", "refresh_token") in kr.d  # an outage must not forget the sign-in
 

@@ -81,7 +81,7 @@ def open_profile_manager(parent) -> tuple[Mode | None, ProfileManager]:
         "ShopifyTool-DB",
         fallback_root=resolve_base_path(),
         cache_dir=Path(get_persistent_data_path("db_cache")),
-        prompt=lambda: SignInDialog.ask(parent),
+        prompt=lambda error: SignInDialog.ask(parent, error),
     )
     if mode is Mode.SUPABASE:
         return mode, ProfileManager(store=store, require_connection=False)
