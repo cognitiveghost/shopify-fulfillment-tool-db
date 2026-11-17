@@ -4,7 +4,7 @@
         --orders 300 [--seed 1] [--stock-out PATH]
 
 Products, SKUs, shipping methods and countries come from tests/replay/fixtures; customer names are fake
-(FAKE_NAMES). Orders are test orders (no receipts sent). Lines are custom line items (title and price, no
+(FAKE_NAMES). Orders are test orders (no receipts sent). Lines are custom line items (title, sku and price, no
 variant), so the store needs no product variants. The token is read from SHOPIFY_SEED_TOKEN only: never argv,
 never printed. The shop must end in .myshopify.com.
 """
@@ -115,6 +115,7 @@ def _order_variables(order: dict) -> dict:
             "lineItems": [
                 {
                     "title": line["title"],
+                    **({"sku": line["sku"]} if line["sku"] else {}),
                     "quantity": line["quantity"],
                     "priceSet": _money(line["price"]),
                     "requiresShipping": True,
