@@ -41,9 +41,75 @@ from typing import Any
 
 from shared.file_lock import FileLockError  # noqa: F401  re-exported; tests check it is the shared class
 from shared.metadata_utils import get_current_timestamp, parse_timestamp
-from shared.store import FileStore, Store, StoreError, StoreNotFound
+from shared.store import Delta, FileStore, Store, StoreError, StoreNotFound, delta
 
 STATS_REL = "Stats/global_stats.json"
+
+
+def _default_stats() -> dict[str, Any]:
+    """Get default statistics structure."""
+    return {
+        "total_orders_analyzed": 0,
+        "total_orders_packed": 0,
+        "total_sessions": 0,
+        "total_labels_printed": 0,
+        "by_client": {},
+        "analysis_history": [],
+        "packing_history": [],
+        "label_print_history": [],
+        "last_updated": get_current_timestamp(),
+        "version": "2.0",
+    }
+
+
+def _stats_with_defaults(stats: Any) -> dict[str, Any]:
+    """Stats as read, with missing keys filled in; defaults if absent or not a dict."""
+    if not isinstance(stats, dict):
+        return _default_stats()
+    default = _default_stats()
+    for key in default:
+        if key not in stats:
+            stats[key] = default[key]
+    return stats
+
+
+@delta("stats.record_packing")
+def _record_packing_delta(
+    current, *, client_id, session_id, worker_id, orders_count, items_count, metadata, timestamp
+) -> dict[str, Any]:
+    stats = _stats_with_defaults(current)
+    stats["total_orders_packed"] += orders_count
+    stats["total_sessions"] += 1
+
+    if client_id not in stats["by_client"]:
+        stats["by_client"][client_id] = {
+            "orders_analyzed": 0,
+            "orders_packed": 0,
+            "sessions": 0,
+        }
+
+    stats["by_client"][client_id]["orders_packed"] += orders_count
+    stats["by_client"][client_id]["sessions"] += 1
+
+    record = {
+        "timestamp": timestamp,
+        "client_id": client_id,
+        "session_id": session_id,
+        "worker_id": worker_id,
+        "orders_count": orders_count,
+        "items_count": items_count,
+    }
+
+    if metadata:
+        record["metadata"] = metadata
+
+    stats["packing_history"].append(record)
+
+    if len(stats["packing_history"]) > 1000:
+        stats["packing_history"] = stats["packing_history"][-1000:]
+
+    stats["last_updated"] = timestamp
+    return stats
 
 
 class StatsManagerError(Exception):
@@ -105,28 +171,11 @@ class StatsManager:
 
     def _get_default_stats(self) -> dict[str, Any]:
         """Get default statistics structure."""
-        return {
-            "total_orders_analyzed": 0,
-            "total_orders_packed": 0,
-            "total_sessions": 0,
-            "total_labels_printed": 0,
-            "by_client": {},
-            "analysis_history": [],
-            "packing_history": [],
-            "label_print_history": [],
-            "last_updated": get_current_timestamp(),
-            "version": "2.0",
-        }
+        return _default_stats()
 
     def _with_defaults(self, stats: Any) -> dict[str, Any]:
         """Stats as read, with missing keys filled in; defaults if absent or not a dict."""
-        if not isinstance(stats, dict):
-            return self._get_default_stats()
-        default = self._get_default_stats()
-        for key in default:
-            if key not in stats:
-                stats[key] = default[key]
-        return stats
+        return _stats_with_defaults(stats)
 
     def _with_retries(self, what: str, op):
         """Run op(); a store error is retried, then raised as StatsManagerError."""
@@ -165,6 +214,10 @@ class StatsManager:
             stats["last_updated"] = get_current_timestamp()
             return stats
 
+        self._update_doc(fn)
+
+    def _update_doc(self, fn) -> None:
+        """Run fn(current) -> new stats under the Store's lock, with retries and unreadable-JSON recovery."""
         def update():
             try:
                 self.store.update_json(STATS_REL, fn)
@@ -243,38 +296,16 @@ class StatsManager:
             items_count: Number of items packed
             metadata: Optional additional metadata (e.g., duration, start_time, end_time)
         """
-        def update(stats):
-            stats["total_orders_packed"] += orders_count
-            stats["total_sessions"] += 1
-
-            if client_id not in stats["by_client"]:
-                stats["by_client"][client_id] = {
-                    "orders_analyzed": 0,
-                    "orders_packed": 0,
-                    "sessions": 0,
-                }
-
-            stats["by_client"][client_id]["orders_packed"] += orders_count
-            stats["by_client"][client_id]["sessions"] += 1
-
-            record = {
-                "timestamp": get_current_timestamp(),
-                "client_id": client_id,
-                "session_id": session_id,
-                "worker_id": worker_id,
-                "orders_count": orders_count,
-                "items_count": items_count,
-            }
-
-            if metadata:
-                record["metadata"] = metadata
-
-            stats["packing_history"].append(record)
-
-            if len(stats["packing_history"]) > 1000:
-                stats["packing_history"] = stats["packing_history"][-1000:]
-
-        self._atomic_update(update)
+        args = {
+            "client_id": client_id,
+            "session_id": session_id,
+            "worker_id": worker_id,
+            "orders_count": orders_count,
+            "items_count": items_count,
+            "metadata": metadata,
+            "timestamp": get_current_timestamp(),
+        }
+        self._update_doc(Delta("stats.record_packing", args))
 
     def get_global_stats(self) -> dict[str, Any]:
         """Get global statistics summary."""
