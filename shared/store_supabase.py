@@ -115,6 +115,7 @@ class SupabaseStore(Store):
         self.client = client
         self.pc = pc
         self.cache_dir = Path(cache_dir)
+        self._fetched: dict[str, object] = {}  # rel -> blob stamp of the copy on disk
 
     # --- small helpers ---------------------------------------------------
     def _t(self, table: str):
@@ -675,8 +676,12 @@ class SupabaseStore(Store):
         path = self.cache_dir / rel
         if route(rel).kind != "blob" or "." not in rel.rsplit("/", 1)[-1]:
             return path  # a folder (Clients, Sessions/..): nothing to fetch, and no network call
-        # ponytail: re-downloaded on every call, no freshness check; add an etag
-        # compare when a caller needs to open the same large file repeatedly.
+        try:
+            current = self._blob_stamp(rel)
+        except StoreNotFound:
+            return path
+        if self._fetched.get(rel) == current and path.exists():
+            return path
         try:
             data = self._bucket.download(rel)
         except StorageException as e:
@@ -685,6 +690,7 @@ class SupabaseStore(Store):
             raise
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
+        self._fetched[rel] = current  # stamped before the download: a change in between refetches next time
         return path
 
     # --- list locks (RPCs from the locks migration) ----------------------

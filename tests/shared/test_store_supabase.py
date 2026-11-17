@@ -202,3 +202,50 @@ def test_packing_overview_request_count_is_fixed(store, monkeypatch):
     for i in range(3, 6):
         store.write_json(f"Sessions/CLIENT_X/n{i}/packing_lists/U.json", {"total_orders": 1, "orders": []})
     assert few == count_calls() <= 5
+
+
+class _CountingBucket:
+    def __init__(self, bucket, downloads):
+        self._bucket = bucket
+        self._downloads = downloads
+
+    def download(self, rel):
+        self._downloads.append(rel)
+        return self._bucket.download(rel)
+
+    def __getattr__(self, name):
+        return getattr(self._bucket, name)
+
+
+@pytest.fixture
+def downloads(store, monkeypatch):
+    calls = []
+    real = type(store)._bucket.fget
+    monkeypatch.setattr(type(store), "_bucket", property(lambda self: _CountingBucket(real(self), calls)))
+    return calls
+
+
+def test_local_path_downloads_unchanged_blob_once(store, downloads):
+    store.write_bytes(S + "input/a.csv", b"1")
+    assert store.local_path(S + "input/a.csv").read_bytes() == b"1"
+    assert store.local_path(S + "input/a.csv").read_bytes() == b"1"
+    assert downloads == [S + "input/a.csv"]
+
+
+def test_local_path_refetches_after_change_by_another_pc(store, supabase_client, tmp_path):
+    store.write_bytes(S + "input/a.csv", b"1")
+    assert store.local_path(S + "input/a.csv").read_bytes() == b"1"
+    other_pc = SupabaseStore(supabase_client, pc="pc2", cache_dir=tmp_path / "other")
+    other_pc.write_bytes(S + "input/a.csv", b"2")
+    assert store.local_path(S + "input/a.csv").read_bytes() == b"2"
+
+
+def test_local_path_failed_check_raises_store_error(store, monkeypatch):
+    store.write_bytes(S + "input/a.csv", b"1")
+
+    def down(*a, **k):
+        raise httpx.ConnectError("down")
+
+    monkeypatch.setattr(type(store), "_bucket", property(down))
+    with pytest.raises(StoreError):
+        store.local_path(S + "input/a.csv")
