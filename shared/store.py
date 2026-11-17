@@ -56,6 +56,10 @@ class StoreConflict(StoreError):
     """Optimistic-version clash after retries."""
 
 
+class StoreUnreachable(StoreError):
+    """The backend could not be reached; retrying later may succeed."""
+
+
 @dataclass(frozen=True)
 class LockInfo:
     acquired: bool
