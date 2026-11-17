@@ -23,7 +23,15 @@ from postgrest.exceptions import APIError
 from pydantic import ValidationError
 from storage3.exceptions import StorageException
 
-from shared.store import LockInfo, Store, StoreConflict, StoreError, StoreNotFound
+from shared.store import (
+    PACKING_LIST_KEYS,
+    PACKING_STATE_KEYS,
+    LockInfo,
+    Store,
+    StoreConflict,
+    StoreError,
+    StoreNotFound,
+)
 from shared.store_routes import route
 
 BUCKET = "files"
@@ -90,6 +98,16 @@ def _parse_ts(v: str | None) -> datetime | None:
     return datetime.fromisoformat(v) if v else None
 
 
+def _proj(col: str, keys: tuple[str, ...]) -> str:
+    """PostgREST select items reading each top-level key of a jsonb column."""
+    return ",".join(f"{k}:{col}->{k}" for k in keys)
+
+
+def _present(row: dict, keys: tuple[str, ...]) -> dict:
+    """The non-null projected keys of `row`."""
+    return {k: row[k] for k in keys if row.get(k) is not None}
+
+
 class SupabaseStore(Store):
     derived_indexes = True
 
@@ -97,6 +115,7 @@ class SupabaseStore(Store):
         self.client = client
         self.pc = pc
         self.cache_dir = Path(cache_dir)
+        self._fetched: dict[str, object] = {}  # rel -> blob stamp of the copy on disk
 
     # --- small helpers ---------------------------------------------------
     def _t(self, table: str):
@@ -408,6 +427,53 @@ class SupabaseStore(Store):
         return [{**r["info"], "session_name": r["name"]} for r in rows]
 
     @_guard
+    def packing_overview(self, client_id):
+        """Five selects, joined here. Rows are driven by the live, non-withdrawn lists, so a
+        state or lock row for anything else never shows up."""
+        def rows(table, cols, *order, not_null=None, **eq):
+            def query():
+                q = self._t(table).select(cols, count="exact").eq("client_id", client_id)
+                for k, v in eq.items():
+                    q = q.eq(k, v)
+                if not_null:
+                    q = q.not_.is_(not_null, "null")
+                for c in order:  # unique keys: paging over ties cannot drop or repeat a row
+                    q = q.order(c)
+                return q
+            return self._all(query)
+
+        live = {r["name"] for r in rows("sessions", "name", "name", archived=False)}
+        infos = {r["name"]: {"pc_name": r["pc_name"]} for r in
+                 rows("sessions", "name,pc_name:info->>pc_name", "name", archived=False, not_null="info")}
+        states = {(r["session_name"], r["list_name"]): r for r in rows(
+            "packing_state", f"session_name,list_name,summary,{_proj('state', PACKING_STATE_KEYS)}",
+            "session_name", "list_name")}
+        locks = {(r["session_name"], r["list_name"]): LockInfo(
+                     True, r["holder_pc"], r["holder_user"], _parse_ts(r["heartbeat_at"]))
+                 for r in rows("list_locks", "session_name,list_name,holder_pc,holder_user,heartbeat_at",
+                               "session_name", "list_name")}
+        out = []
+        for r in rows("packing_lists", f"session_name,name,{_proj('body', PACKING_LIST_KEYS)}",
+                      "session_name", "name", withdrawn=False):
+            s, lname = r["session_name"], r["name"]
+            if s not in live:
+                continue
+            st = states.get((s, lname))
+            state = _present(st or {}, PACKING_STATE_KEYS)
+            out.append({
+                "session_name": s,
+                "list_name": lname,
+                "work_rel": f"Sessions/CLIENT_{client_id}/{s}/packing/{lname}",
+                "packing_list": _present(r, PACKING_LIST_KEYS),
+                "started": st is not None,
+                "state": state or None,
+                "summary": st["summary"] if st else None,
+                "lock": locks.get((s, lname)),
+                "session_info": infos.get(s),
+            })
+        return sorted(out, key=lambda r: (r["session_name"], r["list_name"]))
+
+    @_guard
     def stamp(self, rel):
         r = route(rel)
         if r.kind == "blob":
@@ -610,8 +676,12 @@ class SupabaseStore(Store):
         path = self.cache_dir / rel
         if route(rel).kind != "blob" or "." not in rel.rsplit("/", 1)[-1]:
             return path  # a folder (Clients, Sessions/..): nothing to fetch, and no network call
-        # ponytail: re-downloaded on every call, no freshness check; add an etag
-        # compare when a caller needs to open the same large file repeatedly.
+        try:
+            current = self._blob_stamp(rel)
+        except StoreNotFound:
+            return path
+        if current != (None, None) and self._fetched.get(rel) == current and path.exists():
+            return path
         try:
             data = self._bucket.download(rel)
         except StorageException as e:
@@ -620,6 +690,7 @@ class SupabaseStore(Store):
             raise
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
+        self._fetched[rel] = current  # stamped before the download: a change in between refetches next time
         return path
 
     # --- list locks (RPCs from the locks migration) ----------------------

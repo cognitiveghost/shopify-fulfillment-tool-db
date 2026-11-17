@@ -1,5 +1,7 @@
+import httpx
 import pytest
 from postgrest.exceptions import APIError
+from test_store_contract import _seed_overview
 
 from shared.store import StoreConflict, StoreError, StoreNotFound
 from shared.store_supabase import SupabaseStore
@@ -159,3 +161,99 @@ def test_query_sessions_lists_live_sessions_with_info(store):
 
     assert store.query_sessions("X") == [{"session_name": "live", "status": "active"}]
     assert store.query_sessions("NOBODY") == []
+
+
+def test_packing_overview_skips_withdrawn_and_archived(store, supabase_client):
+    _seed_overview(store)
+    # the withdrawn list W (under s1) still has a started state and a lock: both must stay out
+    store.write_json("Sessions/CLIENT_X/s1/packing/W/packing_state.json", {"worker_id": "w9", "progress": {}})
+    store.acquire_list_lock("Sessions/CLIENT_X/s1/packing/W", "PC-C", "u")
+    supabase_client.table("sessions").update({"archived": True}).eq("client_id", "X").eq("name", "s3").execute()
+
+    assert [(r["session_name"], r["list_name"]) for r in store.packing_overview("X")] == [("s1", "U"), ("s2", "S")]
+
+
+def test_packing_overview_api_error_raises(store, monkeypatch):
+    def down(*a, **k):
+        raise httpx.ConnectError("down")
+
+    monkeypatch.setattr(store.client, "table", down)
+    with pytest.raises(StoreError):
+        store.packing_overview("X")
+
+
+def test_packing_overview_request_count_is_fixed(store, monkeypatch):
+    def count_calls():
+        calls = []
+        real = store.client.table
+
+        def counting(name):
+            calls.append(name)
+            return real(name)
+
+        with monkeypatch.context() as m:
+            m.setattr(store.client, "table", counting)
+            store.packing_overview("X")
+        return len(calls)
+
+    for i in range(3):
+        store.write_json(f"Sessions/CLIENT_X/n{i}/packing_lists/U.json", {"total_orders": 1, "orders": []})
+    few = count_calls()
+    for i in range(3, 6):
+        store.write_json(f"Sessions/CLIENT_X/n{i}/packing_lists/U.json", {"total_orders": 1, "orders": []})
+    assert few == count_calls() <= 5
+
+
+class _CountingBucket:
+    def __init__(self, bucket, downloads):
+        self._bucket = bucket
+        self._downloads = downloads
+
+    def download(self, rel):
+        self._downloads.append(rel)
+        return self._bucket.download(rel)
+
+    def __getattr__(self, name):
+        return getattr(self._bucket, name)
+
+
+@pytest.fixture
+def downloads(store, monkeypatch):
+    calls = []
+    real = type(store)._bucket.fget
+    monkeypatch.setattr(type(store), "_bucket", property(lambda self: _CountingBucket(real(self), calls)))
+    return calls
+
+
+def test_local_path_downloads_unchanged_blob_once(store, downloads):
+    store.write_bytes(S + "input/a.csv", b"1")
+    assert store.local_path(S + "input/a.csv").read_bytes() == b"1"
+    assert store.local_path(S + "input/a.csv").read_bytes() == b"1"
+    assert downloads == [S + "input/a.csv"]
+
+
+def test_local_path_without_a_stamp_always_downloads(store, downloads, monkeypatch):
+    store.write_bytes(S + "input/a.csv", b"1")
+    monkeypatch.setattr(store, "_blob_stamp", lambda rel: (None, None))
+    store.local_path(S + "input/a.csv")
+    store.local_path(S + "input/a.csv")
+    assert downloads == [S + "input/a.csv"] * 2
+
+
+def test_local_path_refetches_after_change_by_another_pc(store, supabase_client, tmp_path):
+    store.write_bytes(S + "input/a.csv", b"1")
+    assert store.local_path(S + "input/a.csv").read_bytes() == b"1"
+    other_pc = SupabaseStore(supabase_client, pc="pc2", cache_dir=tmp_path / "other")
+    other_pc.write_bytes(S + "input/a.csv", b"2")
+    assert store.local_path(S + "input/a.csv").read_bytes() == b"2"
+
+
+def test_local_path_failed_check_raises_store_error(store, monkeypatch):
+    store.write_bytes(S + "input/a.csv", b"1")
+
+    def down(*a, **k):
+        raise httpx.ConnectError("down")
+
+    monkeypatch.setattr(type(store), "_bucket", property(down))
+    with pytest.raises(StoreError):
+        store.local_path(S + "input/a.csv")
