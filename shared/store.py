@@ -94,7 +94,7 @@ class Delta:
         self.op_id = op_id
 
     def __call__(self, current):
-        applied = (current or {}).get(APPLIED_OPS, [])
+        applied = current.get(APPLIED_OPS, []) if isinstance(current, dict) else []
         if self.op_id is not None and self.op_id in applied:
             return current
         fn = DELTAS.get(self.kind)
