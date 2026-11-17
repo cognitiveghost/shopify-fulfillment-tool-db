@@ -11,9 +11,11 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QSettings
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from shared import i18n
+from shared.db_auth import SignInCancelled
+from shared.i18n import _
 
 APP_ROOT = Path(__file__).resolve().parent
 
@@ -81,6 +83,23 @@ def build_app_icon():
     return brand_icon("fulfilment-tool")
 
 
+def build_window() -> MainWindow | None:
+    """The main window, or None when the operator cancels the startup sign-in.
+
+    A cancel is not an outage (the window would open degraded), so no window
+    is built: the box says the app needs a sign-in, and main() exits 0.
+    """
+    try:
+        return MainWindow()
+    except SignInCancelled:
+        QMessageBox.information(
+            None,
+            _("Not signed in"),
+            _("The app needs a sign-in to start. Open it again to sign in."),
+        )
+        return None
+
+
 def main():
     """Sets up and runs the Qt application.
 
@@ -102,7 +121,9 @@ def main():
     theme_manager.apply_theme()
     app.setWindowIcon(build_app_icon())
 
-    window = MainWindow()
+    window = build_window()
+    if window is None:
+        sys.exit(0)
 
     if QApplication.platformName() != "offscreen":
         window.show()

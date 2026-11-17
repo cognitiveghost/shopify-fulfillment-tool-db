@@ -7,6 +7,8 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 import gui.main_window_pyside as window_module
+import gui_main
+from shared import db_auth
 from shared.store import FileStore
 from shared.store_mode import Mode
 from shopify_tool.profile_manager import resolve_base_path
@@ -102,3 +104,24 @@ def test_no_store_at_all_is_a_degraded_window_without_the_fallback_banner(window
         assert win.error_banner.isHidden()
     finally:
         win.close()
+
+
+def test_cancelled_sign_in_quits_with_message(tmp_path, monkeypatch):
+    """Cancelling the sign-in at startup builds no window; the box says why and gui_main quits."""
+    monkeypatch.setenv("FULFILLMENT_SERVER_PATH", str(tmp_path / "server"))
+    monkeypatch.setattr(window_module, "get_persistent_data_path", lambda name: str(tmp_path / name))
+    monkeypatch.delenv("FULFILLMENT_STORE_MODE", raising=False)
+    QApplication.instance() or QApplication([])
+
+    def cancelled(app_name, **kwargs):
+        raise db_auth.SignInCancelled()
+
+    shown = []
+    monkeypatch.setattr(window_module, "open_store", cancelled)
+    monkeypatch.setattr(
+        gui_main, "QMessageBox",
+        SimpleNamespace(information=lambda parent, title, text: shown.append((title, text))),
+    )
+
+    assert gui_main.build_window() is None
+    assert shown == [("Not signed in", "The app needs a sign-in to start. Open it again to sign in.")]
