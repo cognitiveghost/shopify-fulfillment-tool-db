@@ -13,7 +13,6 @@ merges again.
 
 import io
 import logging
-import os
 from datetime import datetime
 from pathlib import Path
 
@@ -101,21 +100,20 @@ def _csv_bytes(df: pd.DataFrame) -> bytes:
     return df.to_csv(index=False, columns=COLUMNS).encode("utf-8")
 
 
-def session_folders(sessions_dir: Path, current: str | None) -> set[str] | None:
-    """The names of the session folders in `sessions_dir`, from one listing.
+def session_folders(store: Store, sessions_rel: str, current: str | None) -> set[str] | None:
+    """The names in `sessions_rel` (a client's sessions folder), from one `store.list_dir`.
 
     None when the folder can't be listed, or when `current` is given and is
     not among them: a listing that misses the session being saved is of the
     wrong or an unreachable folder, and must not prune anything.
     """
     try:
-        with os.scandir(sessions_dir) as it:
-            names = {entry.name for entry in it if entry.is_dir()}
-    except OSError:
-        logger.warning(f"Could not list session folders in {sessions_dir}", exc_info=True)
+        names = set(store.list_dir(sessions_rel))
+    except StoreError:
+        logger.warning(f"Could not list session folders in {sessions_rel}", exc_info=True)
         return None
     if current is not None and current not in names:
-        logger.warning(f"Session folder listing of {sessions_dir} lacks {current!r}; not pruning history")
+        logger.warning(f"Session folder listing of {sessions_rel} lacks {current!r}; not pruning history")
         return None
     return names
 

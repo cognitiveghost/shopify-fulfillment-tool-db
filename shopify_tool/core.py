@@ -1339,7 +1339,7 @@ def _save_results_and_reports(
         history_store, history_rel = fulfillment_history.history_location(profile_manager, client_id)
         # Only the run prunes rows of deleted session folders (AUDIT-07-L1).
         existing_sessions = (
-            fulfillment_history.session_folders(Path(session_path).parent, current_session)
+            fulfillment_history.session_folders(history_store, f"Sessions/CLIENT_{client_id}", current_session)
             if session_path
             else None
         )

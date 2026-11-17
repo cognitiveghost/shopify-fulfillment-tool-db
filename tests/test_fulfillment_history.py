@@ -177,9 +177,24 @@ def test_without_a_listing_nothing_is_pruned(tmp_path):
     assert "gone" in set(fh.load(store, fh.FILE_NAME)["Session"])
 
 
+def test_session_folders_lists_through_the_store(tmp_path):
+    store = FileStore(tmp_path)
+    store.write_json("Sessions/CLIENT_M/s1/session_info.json", {})
+    store.write_json("Sessions/CLIENT_M/s2/session_info.json", {})
+    assert {"s1", "s2"} <= fh.session_folders(store, "Sessions/CLIENT_M", None)
+
+
 def test_session_folders_refuses_a_listing_without_the_current_session(tmp_path):
-    (tmp_path / "a").mkdir()
-    (tmp_path / "file.txt").write_text("x", encoding="utf-8")
-    assert fh.session_folders(tmp_path, "a") == {"a"}
-    assert fh.session_folders(tmp_path, "b") is None
-    assert fh.session_folders(tmp_path / "missing", None) is None
+    store = FileStore(tmp_path)
+    store.write_json("Sessions/CLIENT_M/a/session_info.json", {})
+    assert "a" in fh.session_folders(store, "Sessions/CLIENT_M", "a")
+    assert fh.session_folders(store, "Sessions/CLIENT_M", "b") is None
+
+
+class Unlistable(FileStore):
+    def list_dir(self, rel):
+        raise StoreError(rel)
+
+
+def test_session_folders_is_none_when_the_store_cannot_list(tmp_path):
+    assert fh.session_folders(Unlistable(tmp_path), "Sessions/CLIENT_M", "a") is None
