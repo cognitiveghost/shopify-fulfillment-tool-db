@@ -41,7 +41,15 @@ from typing import Any
 
 from shared.file_lock import FileLockError  # noqa: F401  re-exported; tests check it is the shared class
 from shared.metadata_utils import get_current_timestamp, parse_timestamp
-from shared.store import Delta, FileStore, Store, StoreError, StoreNotFound, delta
+from shared.store import (
+    Delta,
+    FileStore,
+    Store,
+    StoreError,
+    StoreNotFound,
+    StoreUnreachable,
+    delta,
+)
 
 STATS_REL = "Stats/global_stats.json"
 
@@ -189,8 +197,11 @@ class StatsManager:
 
     @staticmethod
     def _unreadable(e: StoreError) -> bool:
-        """Invalid JSON (a ValueError under StoreError) counts as no stats, as it always has."""
-        return isinstance(e.__cause__, ValueError)
+        """Invalid JSON (a ValueError under StoreError) counts as no stats, as it always has.
+
+        A cut-off response (StoreUnreachable) is not: resetting on it would wipe the stats.
+        """
+        return isinstance(e.__cause__, ValueError) and not isinstance(e, StoreUnreachable)
 
     def _load_stats(self) -> dict[str, Any]:
         """Load statistics; absent or unreadable JSON gives defaults."""

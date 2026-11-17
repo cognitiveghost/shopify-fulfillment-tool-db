@@ -17,7 +17,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from shared.store import Store, StoreError, StoreNotFound
+from shared.store import Store, StoreError, StoreNotFound, StoreUnreachable
 
 logger = logging.getLogger("ShopifyToolLogger")
 
@@ -27,6 +27,11 @@ BACKUPS = "Clients/backups"
 
 
 # Custom Exception
+def _corrupt(e: StoreError) -> bool:
+    """Invalid JSON on the server, not a cut-off response (StoreUnreachable, retry later)."""
+    return isinstance(e.__cause__, json.JSONDecodeError) and not isinstance(e, StoreUnreachable)
+
+
 class GroupsManagerError(Exception):
     """Base exception for GroupsManager errors."""
 
@@ -121,7 +126,7 @@ class GroupsManager:
         except StoreNotFound:
             return self._create_default_groups()
         except StoreError as e:
-            if isinstance(e.__cause__, json.JSONDecodeError):
+            if _corrupt(e):
                 logger.exception("Corrupted JSON in groups.json")
                 self._back_up_corrupted()
             else:
@@ -228,7 +233,7 @@ class GroupsManager:
             try:
                 self.store.update_json(GROUPS, fn)
             except StoreError as e:
-                if not isinstance(e.__cause__, json.JSONDecodeError):
+                if not _corrupt(e):
                     raise
                 logger.exception("Corrupted JSON in groups.json")
                 self._back_up_corrupted()
