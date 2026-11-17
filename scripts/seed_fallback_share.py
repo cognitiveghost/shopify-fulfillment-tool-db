@@ -11,6 +11,9 @@ import shutil
 import sys
 from pathlib import Path
 
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
+
 from scripts.build_guide_server import build
 
 MARKER = ".fallback-share-seed"

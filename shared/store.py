@@ -148,6 +148,9 @@ class Store:
         Row keys: session_name, list_name, work_rel, packing_list (trimmed to PACKING_LIST_KEYS),
         started, state (trimmed to PACKING_STATE_KEYS, or None), summary, lock (LockInfo or None),
         session_info ({"pc_name": ...} or None). An unknown client gives []; a failed read raises StoreError.
+
+        Known backend differences: FileStore keeps null-valued keys in the trimmed docs, Supabase drops them; a lock
+        with no state row is started=True on FileStore (the lock lives in the work folder), False on Supabase.
         """
         raise NotImplementedError
 

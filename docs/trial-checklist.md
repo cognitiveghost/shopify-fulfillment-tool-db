@@ -24,7 +24,8 @@ Why: the `@pytest.mark.supabase` tests wipe every table and the storage bucket o
 destroys the manual trial data. So run the reset after any test run, before a manual trial.
 
 Remote (hosted project): there is no reset. Load once with the owner's sign-in (the loader asks for the email and
-password when `SUPABASE_SERVICE_KEY` is unset), and do not run `db reset` there.
+password when `SUPABASE_SERVICE_KEY` is unset), and do not run `db reset` there. A second load rewrites the
+client configs and every `session_info.json` as unanalysed, so do not rerun it after a trial round.
 
 ## Setup
 

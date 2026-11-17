@@ -232,6 +232,14 @@ def test_local_path_downloads_unchanged_blob_once(store, downloads):
     assert downloads == [S + "input/a.csv"]
 
 
+def test_local_path_without_a_stamp_always_downloads(store, downloads, monkeypatch):
+    store.write_bytes(S + "input/a.csv", b"1")
+    monkeypatch.setattr(store, "_blob_stamp", lambda rel: (None, None))
+    store.local_path(S + "input/a.csv")
+    store.local_path(S + "input/a.csv")
+    assert downloads == [S + "input/a.csv"] * 2
+
+
 def test_local_path_refetches_after_change_by_another_pc(store, supabase_client, tmp_path):
     store.write_bytes(S + "input/a.csv", b"1")
     assert store.local_path(S + "input/a.csv").read_bytes() == b"1"

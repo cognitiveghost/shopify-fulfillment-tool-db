@@ -6,12 +6,14 @@
 Products, SKUs, shipping methods and countries come from tests/replay/fixtures; customer names are fake
 (FAKE_NAMES). Orders are test orders (no receipts sent). Lines are custom line items (title, sku and price, no
 variant), so the store needs no product variants. The token is read from SHOPIFY_SEED_TOKEN only: never argv,
-never printed. The shop must end in .myshopify.com.
+never printed. The shop must be <x>.myshopify.com. A run that fails midway leaves a partial seed, and a rerun
+adds duplicates: start again on a fresh dev store.
 """
 
 import argparse
 import os
 import random
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -109,6 +111,7 @@ def _order_variables(order: dict) -> dict:
     first, _, last = order["name"].partition(" ")
     return {
         "order": {
+            "test": True,
             "currency": CURRENCY,
             "shippingAddress": {"firstName": first, "lastName": last, "countryCode": order["country"]},
             "shippingLines": [{"title": order["shipping_method"], "priceSet": _money("0.00")}],
@@ -162,7 +165,7 @@ def main(argv: list[str] | None = None) -> None:
     if not token:
         print("refusing: set SHOPIFY_SEED_TOKEN in the environment (never on the command line)", file=sys.stderr)
         sys.exit(2)
-    if not args.shop.endswith(".myshopify.com"):
+    if not re.fullmatch(r"[a-z0-9-]+\.myshopify\.com", args.shop):
         print(f"refusing: {args.shop} does not end in .myshopify.com", file=sys.stderr)
         sys.exit(2)
 

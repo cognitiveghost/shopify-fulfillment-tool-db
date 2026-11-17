@@ -1,5 +1,9 @@
 """scripts/seed_fallback_share.py: refusals, reset safety and the seeded layout (spec A5)."""
 
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 from scripts.seed_fallback_share import MARKER, refusal, seed
@@ -61,3 +65,9 @@ def test_reset_with_marker_reseeds(tmp_path):
 
     assert not (dest / "junk.txt").exists()
     assert (dest / MARKER).exists()
+
+
+def test_runs_as_documented_from_a_script_path():
+    script = Path(__file__).resolve().parent.parent / "scripts" / "seed_fallback_share.py"
+    run = subprocess.run([sys.executable, str(script), "--help"], capture_output=True, text=True, check=False)
+    assert run.returncode == 0, run.stderr

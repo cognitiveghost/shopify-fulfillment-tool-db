@@ -107,14 +107,15 @@ def test_write_stock_csv_headers(tmp_path):
     assert list(df["Артикул"]) == [p["sku"] for p in plan.products]
 
 
-def test_main_refuses_non_myshopify_shop(monkeypatch):
+@pytest.mark.parametrize("shop", ["example.com", "evil.example/.myshopify.com", "x.myshopify.com.evil.io"])
+def test_main_refuses_non_myshopify_shop(monkeypatch, shop):
     def no_request(*args, **kwargs):
         raise AssertionError("no request expected")
 
     monkeypatch.setattr(seed_dev_store, "push_seed", no_request)
     monkeypatch.setenv("SHOPIFY_SEED_TOKEN", "t")
     with pytest.raises(SystemExit) as exc:
-        main(["--client", "ALMA", "--shop", "example.com"])
+        main(["--client", "ALMA", "--shop", shop])
     assert exc.value.code == 2
 
 

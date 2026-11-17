@@ -680,7 +680,7 @@ class SupabaseStore(Store):
             current = self._blob_stamp(rel)
         except StoreNotFound:
             return path
-        if self._fetched.get(rel) == current and path.exists():
+        if current != (None, None) and self._fetched.get(rel) == current and path.exists():
             return path
         try:
             data = self._bucket.download(rel)
