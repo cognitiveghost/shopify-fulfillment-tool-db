@@ -10,13 +10,15 @@ Run this before any manual trial on the local stack. It rebuilds the same datase
 
 ```bash
 supabase db reset
+export FULFILLMENT_DB_URL=<API_URL from `supabase status`>
 SUPABASE_SERVICE_KEY=<service_role key from `supabase status`> \
   .venv/bin/python scripts/load_fixtures_to_db.py --fixtures tests/replay/fixtures
 SUPABASE_SERVICE_KEY=<service_role key from `supabase status`> \
   .venv/bin/python scripts/load_fixtures_to_db.py
 ```
 
-`supabase db reset` re-applies the migrations to an empty database. The first load writes the 26 replay sessions
+Without `FULFILLMENT_DB_URL` the loader targets the hosted project (it prints `target <url>` first), which refuses
+the local key. `supabase db reset` re-applies the migrations to an empty database. The first load writes the 26 replay sessions
 (ALMA, HERBAR, LIDA). The second writes the guide server (two clients, sessions with packing lists, packer settings,
 workers). Both are needed for a full trial dataset.
 
