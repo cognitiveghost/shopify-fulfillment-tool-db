@@ -72,6 +72,8 @@ def _json_offenders(label: str, doc, words: dict[str, list[str]]) -> list[str]:
     out = []
     for key, value in person_values(doc):
         field = _KEYS[key.lower()]
+        if value == key:  # a column mapping entry in shopify_config, e.g. "Notes": "Notes"
+            continue
         if not accepted(value, PLACEHOLDER[field], words[field]):
             out.append(f"{label}: {key}={value}")
     return out

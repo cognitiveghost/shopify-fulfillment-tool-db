@@ -1,7 +1,12 @@
 import pandas as pd
 import pytest
 
-from scripts.check_no_real_data import accepted, offenders, person_values
+from scripts.check_no_real_data import (
+    _json_offenders,
+    accepted,
+    offenders,
+    person_values,
+)
 from scripts.load_fixtures_to_db import build_fixture_server, load
 from scripts.seed_dev_store import FAKE_NAMES
 from shared.store_supabase import SupabaseStore
@@ -19,6 +24,12 @@ def test_accepted_rule():
     assert accepted(FAKE_NAMES[0], "Customer", [])
     assert not accepted("Ivan Petrov", "Customer", words)
     assert not accepted("call Ivan VIP", "Note", words)
+
+
+def test_column_mapping_entry_is_not_an_offender():
+    words = {"Customer": [], "Notes": []}
+    assert _json_offenders("cfg", {"column_mappings": {"orders": {"Notes": "Notes"}}}, words) == []
+    assert _json_offenders("cfg", {"Notes": "call Ivan"}, words) != []
 
 
 def test_walker_matches_keys_case_insensitively():
