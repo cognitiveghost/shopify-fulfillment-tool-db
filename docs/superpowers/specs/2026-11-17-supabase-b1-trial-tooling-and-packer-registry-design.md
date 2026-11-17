@@ -236,7 +236,7 @@ No legacy rows (the trial never holds Excel-workflow sessions). Wrapped in `_gua
 **Contract test** (F `tests/shared/test_store_contract.py`, both backends through the existing `store` fixture):
 seed one client with three sessions through the store's own writes — one with an unstarted list, one with a started
 list holding `packing_state.json` and a lock taken with `acquire_list_lock`, one with a finished list holding
-`session_summary.json`, plus a withdrawn list and an archived session that must not appear — then assert
+`session_summary.json`, plus a withdrawn list that must not appear (archived sessions and a withdrawn list that still has state/lock rows are Supabase-only tests: FileStore archives whole clients) — then assert
 `packing_overview` returns the same rows on both backends. Plus: unknown client → `[]`; a failing backend read
 raises `StoreError` (FileStore: monkeypatch its read to raise; Supabase: a client whose `table()` raises an `httpx.ConnectError`, which
 `_guard` turns into `StoreError`; `_guard`'s existing exception set is enough, nothing new to wrap).
