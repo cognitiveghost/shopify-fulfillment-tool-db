@@ -8,15 +8,19 @@ from keyring.errors import KeyringError
 from supabase_auth.errors import AuthApiError, AuthError, AuthRetryableError
 
 from shared import db_config
+from shared.i18n import _
 from supabase import ClientOptions, create_client
 
 logger = logging.getLogger(__name__)
 
 TIMEOUT_SECONDS = 5  # to connect: an unreachable project fails fast
 TRANSFER_SECONDS = 60  # a large upload or history replace needs longer than that
-PROMPT_ATTEMPTS = 5
 _TOKEN_USER = "refresh_token"
 _UNREACHABLE = (httpx.HTTPError, AuthRetryableError)
+
+
+class SignInCancelled(Exception):
+    """The user closed the sign-in dialog. Not "unreachable": the caller decides."""
 
 
 def _make_client():
@@ -33,8 +37,12 @@ def _remember(service: str, session) -> None:
         logger.warning("No keyring available: the refresh token is not saved")
 
 
-def connect(app_name: str, prompt: Callable[[], tuple[str, str] | None], factory=_make_client):
-    """A signed-in client, or None (user cancelled, or the project is unreachable)."""
+def connect(app_name: str, prompt: Callable[[str | None], tuple[str, str] | None], factory=_make_client):
+    """A signed-in client; None only when the project is unreachable.
+
+    Raises SignInCancelled when the user cancels. prompt(error) keeps being
+    asked until success, cancel, or unreachable; error says why it asks again.
+    """
     service = f"{app_name}-db"
     client = factory()
     # The client refreshes the access token in the background, and each refresh
@@ -47,6 +55,7 @@ def connect(app_name: str, prompt: Callable[[], tuple[str, str] | None], factory
             token = keyring.get_password(service, _TOKEN_USER)
         except KeyringError:
             token = None
+        error = None
         if token:
             try:
                 res = client.auth.refresh_session(token)
@@ -56,18 +65,19 @@ def connect(app_name: str, prompt: Callable[[], tuple[str, str] | None], factory
                 return None
             except AuthError:
                 logger.info("Saved sign-in was refused; asking again")
-        for _ in range(PROMPT_ATTEMPTS):
-            creds = prompt()
+                error = _("Your saved sign-in has expired. Sign in again.")
+        while True:
+            creds = prompt(error)
             if creds is None:
-                return None
+                raise SignInCancelled()
             try:
                 res = client.auth.sign_in_with_password({"email": creds[0], "password": creds[1]})
             except _UNREACHABLE:
                 return None
             except AuthApiError:
-                continue  # wrong email or password: ask again
+                error = _("Wrong email or password. Try again.")
+                continue  # ask again
             _remember(service, res.session)
             return client
     except _UNREACHABLE:
         return None
-    return None

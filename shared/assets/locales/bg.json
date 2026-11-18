@@ -54,7 +54,9 @@
   "Updates install only in the released app.": "Актуализации се инсталират само в издадената версия на приложението.",
   "User guide": "Ръководство",
   "Version {version} is available": "Налична е версия {version}",
+  "Wrong email or password. Try again.": "Грешен имейл или парола. Опитайте отново.",
   "You have the latest version ({version})": "Имате последната версия ({version})",
+  "Your saved sign-in has expired. Sign in again.": "Запазеният вход е изтекъл. Влезте отново.",
   "{reason} Download it from the release page instead.": "{reason} Изтеглете я от страницата на версията.",
   "✅ Connected": "✅ Свързано",
   "❌ Not reachable": "❌ Няма достъп"

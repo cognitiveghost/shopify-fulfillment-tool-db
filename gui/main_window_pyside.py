@@ -38,6 +38,7 @@ from gui.ui_manager import UIManager
 from gui.web_page import when_painted
 from gui.worker import Worker
 from shared.components.sign_in_dialog import SignInDialog
+from shared.db_auth import SignInCancelled
 from shared.i18n import _
 from shared.store_mode import Mode, open_store
 from shared.update_flow import UpdateFlow
@@ -81,7 +82,7 @@ def open_profile_manager(parent) -> tuple[Mode | None, ProfileManager]:
         "ShopifyTool-DB",
         fallback_root=resolve_base_path(),
         cache_dir=Path(get_persistent_data_path("db_cache")),
-        prompt=lambda: SignInDialog.ask(parent),
+        prompt=lambda error: SignInDialog.ask(parent, error),
     )
     if mode is Mode.SUPABASE:
         return mode, ProfileManager(store=store, require_connection=False)
@@ -296,6 +297,8 @@ class MainWindow(QMainWindow):
         # connection..." in the overflow opens. ADR 0004.
         try:
             self.store_mode, self.profile_manager = open_profile_manager(self)
+        except SignInCancelled:
+            raise  # gui_main.build_window quits on this before any window is shown
         except Exception as e:
             QMessageBox.critical(
                 self,

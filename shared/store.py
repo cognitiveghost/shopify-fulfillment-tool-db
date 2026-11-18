@@ -56,12 +56,63 @@ class StoreConflict(StoreError):
     """Optimistic-version clash after retries."""
 
 
+class StoreUnreachable(StoreError):
+    """The backend could not be reached; retrying later may succeed."""
+
+
 @dataclass(frozen=True)
 class LockInfo:
     acquired: bool
     holder_pc: str | None
     holder_user: str | None
     heartbeat_at: datetime | None
+
+
+APPLIED_OPS = "applied_ops"
+# ponytail: the ring holds the last 200 replayed op ids per document; only offline replays add to it, so a rerun within 200 offline deltas on that doc is safe.
+APPLIED_OPS_KEEP = 200
+DELTAS: dict[str, Callable[..., Any]] = {}
+
+
+def delta(kind: str):
+    """Register fn(current, **args) -> new doc under `kind`. Re-registering the same function (module reload) is fine."""
+    def register(fn):
+        prev = DELTAS.get(kind)
+        if prev is not None and (prev.__module__, prev.__qualname__) != (fn.__module__, fn.__qualname__):
+            raise ValueError(f"delta kind {kind!r} is already registered")
+        DELTAS[kind] = fn
+        return fn
+    return register
+
+
+class Delta:
+    """A named update for Store.update_json that can be queued offline and replayed."""
+
+    def __init__(self, kind: str, args: dict, op_id: str | None = None):
+        self.kind = kind
+        self.args = args
+        self.op_id = op_id
+
+    def __call__(self, current):
+        applied = current.get(APPLIED_OPS, []) if isinstance(current, dict) else []
+        if self.op_id is not None and self.op_id in applied:
+            return current
+        fn = DELTAS.get(self.kind)
+        if fn is None:
+            raise StoreError(f"unknown delta kind: {self.kind}")
+        result = fn(current, **self.args)
+        if not isinstance(result, dict):
+            raise StoreError(f"delta {self.kind} returned {type(result).__name__}, not a dict")
+        if self.op_id is not None:
+            result[APPLIED_OPS] = (applied + [self.op_id])[-APPLIED_OPS_KEEP:]
+        return result
+
+    def to_op(self) -> dict:
+        return {"kind": self.kind, "args": self.args, "op_id": self.op_id}
+
+    @classmethod
+    def from_op(cls, op: dict):
+        return cls(op["kind"], op["args"], op.get("op_id"))
 
 
 class Store:

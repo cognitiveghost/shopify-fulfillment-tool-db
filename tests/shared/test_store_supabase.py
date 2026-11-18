@@ -3,7 +3,7 @@ import pytest
 from postgrest.exceptions import APIError
 from test_store_contract import _seed_overview
 
-from shared.store import StoreConflict, StoreError, StoreNotFound
+from shared.store import StoreConflict, StoreError, StoreNotFound, StoreUnreachable
 from shared.store_supabase import SupabaseStore
 from supabase import create_client
 
@@ -28,6 +28,16 @@ def test_read_error_is_store_error_not_empty(store, monkeypatch):
         with pytest.raises(StoreError) as e:
             call()
         assert not isinstance(e.value, StoreNotFound)
+
+
+def test_unauthenticated_write_is_permanent_not_unreachable(store):
+    import os
+
+    anon = create_client(os.environ["SUPABASE_TEST_URL"], os.environ["SUPABASE_TEST_ANON_KEY"])
+    anon_store = SupabaseStore(anon, pc="pc1", cache_dir=store.cache_dir)
+    with pytest.raises(StoreError) as e:  # the server answered 4xx: retrying will not help
+        anon_store.write_json("Workers/workers.json", {"workers": []})
+    assert not isinstance(e.value, StoreUnreachable)
 
 
 def test_anon_client_cannot_read_or_write(store, supabase_client):

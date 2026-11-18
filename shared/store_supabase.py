@@ -31,6 +31,7 @@ from shared.store import (
     StoreConflict,
     StoreError,
     StoreNotFound,
+    StoreUnreachable,
 )
 from shared.store_routes import route
 
@@ -77,6 +78,37 @@ def _row_for(rel: str) -> _Row | None:
     return None
 
 
+def _http_status(exc: APIError | StorageException) -> int | None:
+    """The HTTP status of a postgrest or storage error, or None when it cannot be read."""
+    if isinstance(exc, APIError):
+        # postgrest keeps the status in `code` only for a non-JSON body (a proxy page).
+        # Range check: a Postgres SQLSTATE such as "42501" is all digits too.
+        code = exc.code or ""
+        return int(code) if code.isdigit() and 100 <= int(code) <= 599 else None
+    status = getattr(exc, "status", None)  # StorageApiError
+    if status is None and exc.args and isinstance(exc.args[0], dict):
+        status = exc.args[0].get("statusCode")  # a bare StorageException
+    try:
+        return int(status)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_unreachable(exc: BaseException) -> bool:
+    """True when retrying later may succeed: the network failed or the server answered 5xx.
+
+    A status that cannot be read counts as permanent.
+    """
+    if isinstance(exc, (httpx.TransportError, OSError, json.JSONDecodeError, ValidationError)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code >= 500
+    if isinstance(exc, (APIError, StorageException)):
+        status = _http_status(exc)
+        return status is not None and status >= 500
+    return False
+
+
 def _guard(fn):
     """Turn transport/DB failures into StoreError (a failed read is never 'empty')."""
     @functools.wraps(fn)
@@ -89,7 +121,8 @@ def _guard(fn):
         # response; route()'s own ValueError for a bad path passes through unwrapped.
         except (APIError, StorageException, httpx.HTTPError, OSError,
                 json.JSONDecodeError, ValidationError) as e:
-            raise StoreError(f"{fn.__name__}{args[:1]}: {e}") from e
+            cls = StoreUnreachable if _is_unreachable(e) else StoreError
+            raise cls(f"{fn.__name__}{args[:1]}: {e}") from e
     return wrapper
 
 

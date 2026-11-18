@@ -7,20 +7,32 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QLabel,
     QLineEdit,
     QVBoxLayout,
 )
 
 from shared.i18n import _
-from shared.theme import apply_dialog_button_roles
+from shared.theme import apply_dialog_button_roles, font_css, on_theme_changed
 
 
 class SignInDialog(QDialog):
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent=None, error: str | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(_("Sign in"))
         self.setModal(True)
         self.setMinimumWidth(320)  # a full email address must fit unclipped
+
+        self.error_label = QLabel(error or "", self)
+        self.error_label.setObjectName("SignInError")
+        self.error_label.setWordWrap(True)
+        self.error_label.setVisible(bool(error))
+        on_theme_changed(
+            self.error_label,
+            lambda tokens, w=self.error_label: w.setStyleSheet(
+                f"{font_css('body')} color: {tokens.status_danger};"
+            ),
+        )
 
         self.email_edit = QLineEdit(self)
         self.password_edit = QLineEdit(self)
@@ -42,6 +54,7 @@ class SignInDialog(QDialog):
         self.buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
+        layout.addWidget(self.error_label)
         layout.addLayout(form)
         layout.addWidget(self.buttons)
 
@@ -63,9 +76,9 @@ class SignInDialog(QDialog):
             self.accept()
 
     @classmethod
-    def ask(cls, parent=None) -> tuple[str, str] | None:
+    def ask(cls, parent=None, error: str | None = None) -> tuple[str, str] | None:
         """Show the dialog and return (email, password) if accepted, else None."""
-        dialog = cls(parent)
+        dialog = cls(parent, error)
         if not dialog.exec():
             return None
         return dialog.values()
