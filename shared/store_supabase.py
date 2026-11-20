@@ -559,11 +559,13 @@ class SupabaseStore(Store):
         if m:
             names = self._col("packing_lists", "name", client_id=m.group(1), session_name=m.group(2), withdrawn=False)
             return [f"{n}.json" for n in names] + (["withdrawn"] if self._col(
-                "packing_lists", "name", client_id=m.group(1), session_name=m.group(2), withdrawn=True) else [])
+                "packing_lists", "name", client_id=m.group(1), session_name=m.group(2), withdrawn=True) else []) \
+                + self._storage_ls(rel)
         m = re.fullmatch(r"Sessions/CLIENT_([^/]+)/([^/]+)/packing_lists/withdrawn", rel)
         if m:
             return [f"{n}.json" for n in self._col(
-                "packing_lists", "name", client_id=m.group(1), session_name=m.group(2), withdrawn=True)]
+                "packing_lists", "name", client_id=m.group(1), session_name=m.group(2), withdrawn=True)] \
+                + self._storage_ls(rel)
         m = re.fullmatch(r"Sessions/CLIENT_([^/]+)/([^/]+)/packing", rel)
         if m:
             return self._col("packing_state", "list_name", client_id=m.group(1), session_name=m.group(2)) \
