@@ -177,6 +177,10 @@ class FileHandler:
             self._pull_worker = None
             toast(self.mw, _("No open unfulfilled orders in {shop}", shop=shop))
             return
+        if self.mw.session_path != session_path:
+            self.log.info("Pulled orders arrived after the session changed; not previewed")
+            self._pull_worker = None
+            return
         selected = PullPreviewDialog.ask(self.mw, orders_df, shop)
         if selected is None:
             self._pull_worker = None
