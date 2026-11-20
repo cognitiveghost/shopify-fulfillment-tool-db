@@ -12,6 +12,8 @@ MAX_THROTTLE_RETRIES = 5
 _TIMEOUT_SECONDS = 30.0
 _sleep = time.sleep  # tests patch this
 
+# currentQuantity, not quantity: lines removed by an order edit or refunded stay on the
+# order at 0 (the CSV export still lists them), and are dropped below.
 # Page sizes keep the requested cost under Shopify's 1,000-point cap per query:
 # each order costs ~10 points plus one per line item asked for, so 25 x (10 + 20).
 _ORDERS_QUERY = """
@@ -30,7 +32,7 @@ query Orders($cursor: String) {
       shippingAddress { name countryCodeV2 }
       lineItems(first: 20) {
         pageInfo { hasNextPage endCursor }
-        nodes { sku name quantity }
+        nodes { sku name quantity: currentQuantity }
       }
     }
   }
@@ -43,7 +45,7 @@ query LineItems($id: ID!, $cursor: String) {
     ... on Order {
       lineItems(first: 50, after: $cursor) {
         pageInfo { hasNextPage endCursor }
-        nodes { sku name quantity }
+        nodes { sku name quantity: currentQuantity }
       }
     }
   }
@@ -160,4 +162,5 @@ def _order_rows(order, lines):
             "Lineitem name": line["name"],
         }
         for line in lines
+        if line["quantity"] > 0
     ]

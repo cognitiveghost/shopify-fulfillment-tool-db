@@ -15,6 +15,7 @@ import os
 import random
 import re
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -92,15 +93,23 @@ def build_seed(client: str, fixtures: Path, n_orders: int, rng_seed: int) -> See
     return SeedPlan(client, products, orders, stock)
 
 
-def _graphql(http: httpx.Client, url: str, query: str, variables: dict, field: str, label: str) -> None:
-    resp = http.post(url, json={"query": query, "variables": variables})
-    resp.raise_for_status()
-    body = resp.json()
-    if body.get("errors"):
-        raise RuntimeError(f"{field} failed for {label}: {body['errors']}")
-    user_errors = ((body.get("data") or {}).get(field) or {}).get("userErrors") or []
-    if user_errors:
-        raise RuntimeError(f"{field} failed for {label}: {user_errors}")
+_THROTTLED = "Too many attempts"  # dev stores allow about 5 orderCreate calls a minute
+
+
+def _graphql(http: httpx.Client, url: str, query: str, variables: dict, field: str, label: str, sleep=time.sleep) -> None:
+    while True:
+        resp = http.post(url, json={"query": query, "variables": variables})
+        resp.raise_for_status()
+        body = resp.json()
+        if body.get("errors"):
+            raise RuntimeError(f"{field} failed for {label}: {body['errors']}")
+        user_errors = ((body.get("data") or {}).get(field) or {}).get("userErrors") or []
+        if user_errors and all(_THROTTLED in e["message"] for e in user_errors):
+            sleep(60)
+            continue
+        if user_errors:
+            raise RuntimeError(f"{field} failed for {label}: {user_errors}")
+        return
 
 
 def _money(amount: str) -> dict:
@@ -130,15 +139,18 @@ def _order_variables(order: dict) -> dict:
     }
 
 
-def push_seed(plan: SeedPlan, shop: str, token: str, transport: httpx.BaseTransport | None = None) -> None:
+def push_seed(
+    plan: SeedPlan, shop: str, token: str, transport: httpx.BaseTransport | None = None, resume_from: int = 0, sleep=time.sleep
+) -> None:
+    """resume_from > 0 skips the products and the first resume_from orders (already in the store)."""
     url = f"https://{shop}/admin/api/{API_VERSION}/graphql.json"
     with httpx.Client(transport=transport, headers={"X-Shopify-Access-Token": token}) as http:
-        for product in plan.products:
+        for product in plan.products if not resume_from else []:
             variables = {"product": {"title": product["title"]}}
             _graphql(http, url, _PRODUCT_CREATE, variables, "productCreate", f"product {product['sku']}")
-        for order in plan.orders:
+        for i, order in enumerate(plan.orders[resume_from:], start=resume_from):
             variables = _order_variables(order)
-            _graphql(http, url, _ORDER_CREATE, variables, "orderCreate", f"order {order['name']}")
+            _graphql(http, url, _ORDER_CREATE, variables, "orderCreate", f"order {i} {order['name']}", sleep)
 
 
 def write_stock_csv(plan: SeedPlan, path: Path, config: dict) -> None:
@@ -158,6 +170,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--shop", required=True, help="the dev store, <x>.myshopify.com")
     parser.add_argument("--orders", type=int, default=300)
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--resume-from", type=int, default=0, metavar="N", help="skip products and the first N orders")
     parser.add_argument("--stock-out", type=Path, metavar="PATH", help="also write the stock CSV here")
     args = parser.parse_args(argv)
 
@@ -170,7 +183,7 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(2)
 
     plan = build_seed(args.client, FIXTURES, args.orders, args.seed)
-    push_seed(plan, args.shop, token)
+    push_seed(plan, args.shop, token, resume_from=args.resume_from)
     print(f"pushed {len(plan.products)} products and {len(plan.orders)} orders to {args.shop}")
     if args.stock_out:
         write_stock_csv(plan, args.stock_out, _latest_config(FIXTURES / args.client))
