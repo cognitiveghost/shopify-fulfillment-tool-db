@@ -162,6 +162,7 @@ def _orders_handler(request: httpx.Request) -> httpx.Response:
 def run_benchmark(
     store, store_label: str, source: str, rtt_ms: float, tmp: Path
 ) -> list[Row]:
+    from PySide6.QtCore import QThreadPool
     from PySide6.QtWidgets import QApplication
 
     from gui import main_window_pyside as window_module
@@ -179,8 +180,18 @@ def run_benchmark(
     config = pm.load_shopify_config(CLIENT)
     src = f"Sessions/CLIENT_{CLIENT}/{source}"
     rows: list[Row] = []
+    # Background work (the window's un-awaited ClientDirectory.gather, for one) would hit the store
+    # during whichever step is timing. Each step waits for these pools and the queued signals first.
+    pools = [QThreadPool.globalInstance()]
+
+    def settle():
+        for pool in pools:
+            if not pool.waitForDone(30_000):
+                raise SystemExit("background work did not finish within 30 s")
+        QApplication.processEvents()
 
     def add(action, fn):
+        settle()
         out, wall, requests = timed(fn)
         rows.append(
             Row(
@@ -227,6 +238,7 @@ def run_benchmark(
     )
     browser_module.SessionBrowserWidget.USE_ASYNC = False
     win = window_module.MainWindow()
+    pools.append(win.threadpool)
     try:
         win.show()
         QApplication.processEvents()
