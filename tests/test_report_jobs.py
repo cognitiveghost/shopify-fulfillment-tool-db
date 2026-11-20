@@ -122,6 +122,16 @@ def test_statistics_record_each_lists_order_count(tmp_path):
     assert info["statistics"]["packing_list_orders"] == {"ALL": 40}
 
 
+def test_statistics_are_not_written_for_a_session_without_a_packing_lists_folder(tmp_path):
+    from types import SimpleNamespace
+
+    writes = []
+    sm = SimpleNamespace(get_session_info=lambda p: {"statistics": {}},
+                         update_session_info=lambda p, u: writes.append(u))
+    report_jobs.update_packing_list_statistics(FileStore(tmp_path), sm, tmp_path)
+    assert writes == []
+
+
 def test_a_tag_edit_keeps_the_fingerprint_and_a_status_edit_changes_it():
     base = report_jobs.packing_fingerprint(FRAME)
     tagged = FRAME.assign(Internal_Tags=['["BOX"]', "[]"], Tags=["VIP", ""], Notes=["n", ""])

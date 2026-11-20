@@ -288,9 +288,10 @@ def update_packing_list_statistics(store, session_manager, session_path, outcome
     """
     try:
         packing_lists_dir = f"{session_rel(store, session_path)}/packing_lists"
-        if not store.exists(packing_lists_dir):
-            return
         names = sorted(n[: -len(".json")] for n in store.list_dir(packing_lists_dir) if n.endswith(".json"))
+        # list_dir is [] for a missing folder too: exists decides only when there is no JSON to list.
+        if not names and not store.exists(packing_lists_dir):
+            return
         session_info = session_manager.get_session_info(str(session_path))
         if not session_info:
             return
