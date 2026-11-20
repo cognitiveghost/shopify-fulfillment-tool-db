@@ -333,3 +333,12 @@ def test_packing_overview_rows(store):
 
 def test_packing_overview_unknown_client_empty(store):
     assert store.packing_overview("NOPE") == []
+
+
+def test_packing_lists_lists_xlsx_with_json(store):
+    store.write_json(S + "packing_lists/DHL.json", {"orders": []})
+    store.write_bytes(S + "packing_lists/DHL.xlsx", b"xlsx")
+    store.write_json(S + "packing_lists/withdrawn/OLD.json", {"orders": []})
+    store.write_bytes(S + "packing_lists/withdrawn/OLD.xlsx", b"xlsx")
+    assert store.list_dir(S + "packing_lists") == ["DHL.json", "DHL.xlsx", "withdrawn"]
+    assert store.list_dir(S + "packing_lists/withdrawn") == ["OLD.json", "OLD.xlsx"]
