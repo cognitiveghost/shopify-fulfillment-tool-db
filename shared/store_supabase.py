@@ -429,8 +429,13 @@ class SupabaseStore(Store):
             return self._exists_history(r)
         if r.kind == "fulfillment_history":
             return self._history_version(r.key["client_id"]) > 0
-        cur = self._read_row(_row_for(rel))
-        return cur is not None and cur[0] is not None
+        return self._row_has_value(_row_for(rel))
+
+    def _row_has_value(self, row: _Row) -> bool:
+        """True iff the cell's row exists and the cell is not NULL. Fetches no cell value."""
+        res = (self._t(row.table).select("version").match(row.match)
+               .not_.is_(row.col, "null").limit(1).execute())
+        return bool(res.data)
 
     def _exists_history(self, r) -> bool:
         res = (self._t("client_config_history").select("id").eq("client_id", r.key["client_id"])
