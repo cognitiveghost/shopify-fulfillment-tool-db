@@ -50,10 +50,22 @@ def test_a_blank_email_does_not_count_as_filled(qapp):
     assert not dialog.ok_button.isEnabled()
 
 
+def test_remember_unticked_by_default(qapp):
+    dialog = SignInDialog()
+    assert not dialog.remember_box.isChecked()
+
+
+def test_values_include_remember(qapp):
+    dialog = SignInDialog()
+    _fill(dialog, email="a@b.c", password="pw")
+    dialog.remember_box.setChecked(True)
+    assert dialog.values() == ("a@b.c", "pw", True)
+
+
 def test_values_return_the_typed_pair_with_the_email_trimmed(qapp):
     dialog = SignInDialog()
     _fill(dialog, email="  pack@example.com ", password="  pw ")
-    assert dialog.values() == ("pack@example.com", "  pw ")
+    assert dialog.values() == ("pack@example.com", "  pw ", False)
 
 
 def test_enter_in_the_password_field_submits_when_ready(qapp):
@@ -80,7 +92,7 @@ def test_ask_returns_the_typed_pair_when_accepted(qapp, monkeypatch):
         return int(self.result())
 
     monkeypatch.setattr(QDialog, "exec", accepted_exec)
-    assert SignInDialog.ask() == ("pack@example.com", "secret")
+    assert SignInDialog.ask() == ("pack@example.com", "secret", False)
 
 
 def test_ask_returns_none_when_rejected(qapp, monkeypatch):

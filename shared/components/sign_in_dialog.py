@@ -1,9 +1,10 @@
 """Email and password for the server sign-in. Sign in stays off until both are filled.
 
-Modal, like ConfirmDialog. Returns the typed pair, or None when cancelled.
+Modal, like ConfirmDialog. Returns the typed pair plus the remember-me choice, or None when cancelled.
 """
 
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -37,10 +38,12 @@ class SignInDialog(QDialog):
         self.email_edit = QLineEdit(self)
         self.password_edit = QLineEdit(self)
         self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.remember_box = QCheckBox(_("Remember me on this PC"), self)
 
         form = QFormLayout()
         form.addRow(_("Email"), self.email_edit)
         form.addRow(_("Password"), self.password_edit)
+        form.addRow(self.remember_box)
 
         self.buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
@@ -64,11 +67,15 @@ class SignInDialog(QDialog):
         self.email_edit.returnPressed.connect(self._submit)
         self.password_edit.returnPressed.connect(self._submit)
 
-    def values(self) -> tuple[str, str]:
-        return self.email_edit.text().strip(), self.password_edit.text()
+    def values(self) -> tuple[str, str, bool]:
+        return (
+            self.email_edit.text().strip(),
+            self.password_edit.text(),
+            self.remember_box.isChecked(),
+        )
 
     def _update_ok(self) -> None:
-        email, password = self.values()
+        email, password, _remember = self.values()
         self.ok_button.setEnabled(bool(email) and bool(password))
 
     def _submit(self) -> None:
@@ -76,8 +83,8 @@ class SignInDialog(QDialog):
             self.accept()
 
     @classmethod
-    def ask(cls, parent=None, error: str | None = None) -> tuple[str, str] | None:
-        """Show the dialog and return (email, password) if accepted, else None."""
+    def ask(cls, parent=None, error: str | None = None) -> tuple[str, str, bool] | None:
+        """Show the dialog and return (email, password, remember) if accepted, else None."""
         dialog = cls(parent, error)
         if not dialog.exec():
             return None

@@ -26,6 +26,7 @@
   "Open release page": "Отвори страницата на версията",
   "Overridden by {env_var} environment variable": "Замества се от променливата на средата {env_var}",
   "Password": "Парола",
+  "Remember me on this PC": "Запомни ме на този компютър",
   "Restart now": "Рестартирай сега",
   "Restart the application for the new path to take effect.": "Рестартирайте приложението, за да влезе в сила новият път.",
   "Restart to switch language?": "Рестартиране за смяна на езика?",

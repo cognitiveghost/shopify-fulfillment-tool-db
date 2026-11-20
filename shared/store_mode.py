@@ -29,7 +29,7 @@ def open_store(
     *,
     fallback_root: str,
     cache_dir: Path,
-    prompt: Callable[[str | None], tuple[str, str] | None],
+    prompt: Callable[[str | None], tuple[str, str, bool] | None],
     outbox_pending: bool = False,
     pc: str | None = None,
 ) -> tuple[Mode, Store | None]:
