@@ -381,7 +381,8 @@ def test_opening_a_session_reads_its_lots(main_window, monkeypatch):
     lots = {"AAA": [{"expiry": "261230", "expiry_dt": date(2026, 12, 30), "batch": "B1", "qty": 5.0}]}
     asked = []
     monkeypatch.setattr(
-        "gui.main_window_pyside.core.session_lot_table", lambda _store, path, _config: asked.append(path) or lots
+        "gui.main_window_pyside.core.session_lot_table",
+        lambda _store, path, _config, **_kwargs: asked.append(path) or lots,
     )
     main_window.profile_manager.create_client_profile("acme", "Client Acme")
     main_window.current_client_id = "acme"

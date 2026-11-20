@@ -1246,7 +1246,7 @@ class MainWindow(QMainWindow):
         self.command_bar.set_state(BarState.SESSION)
         # Before the analysis loads: a session without one must not keep
         # the previous session's chips.
-        self.ui_manager.update_session_chips()
+        self.ui_manager.update_session_chips(loaded.session_info or {})
         if hasattr(self, "undo_manager"):
             self.undo_manager.apply_session_history(loaded.undo_history)
         self.update_session_info_label()

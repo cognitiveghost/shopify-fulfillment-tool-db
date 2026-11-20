@@ -663,21 +663,25 @@ class UIManager:
         self.mw.generate_reports_button_tab2.setEnabled(enabled)
         self.mw.results_bridge.set_export_enabled(enabled)
 
-    def update_session_chips(self) -> None:
+    def update_session_chips(self, info: dict | None = None) -> None:
         """What the bar and the Setup page say about the open session's times.
 
         `Analysed 09:33` and `Stock file 19 h old` for the bar; when the
         session was opened and analysed for the page. Stock age is measured at
         analysis time, not now: it qualifies the analysis. The stock copy in
         the session keeps the source file's mtime (shutil.copy2 in core.py).
+
+        info is the session_info already read for this session (a worker's
+        read on open); None reads it here, on the UI thread.
         """
         bar = self.mw.command_bar
         session_path = getattr(self.mw, "session_path", None)
-        info = (
-            self.mw.session_manager.get_session_info(session_path)
-            if session_path
-            else None
-        ) or {}
+        if info is None:
+            info = (
+                self.mw.session_manager.get_session_info(session_path)
+                if session_path
+                else None
+            ) or {}
         analysed = _parse_time(info.get("analysis_completed_at"))
         # The one read of session_info.json: refresh_setup never touches the share.
         self.mw.session_facts = (

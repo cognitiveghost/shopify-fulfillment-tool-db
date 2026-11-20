@@ -117,6 +117,42 @@ def test_read_session_reads_info_once(main_window, monkeypatch):  # noqa: F811
     assert loaded.analysis_df is not None
 
 
+def test_read_session_downloads_stock_once(main_window, monkeypatch):  # noqa: F811
+    path = _session_with_analysis(main_window)
+    store = main_window.profile_manager.store
+    stock_calls = []
+    for name in ("local_path", "read_bytes"):
+        real = getattr(store, name)
+
+        def counting(rel, *args, _real=real, _name=name, **kwargs):
+            if rel.endswith("inventory.csv"):
+                stock_calls.append(_name)
+            return _real(rel, *args, **kwargs)
+
+        monkeypatch.setattr(store, name, counting)
+    loaded = session_open.read_session(store, main_window.session_manager, path, main_window.active_profile_config)
+
+    assert loaded.stock_path is not None
+    assert len(stock_calls) == 1
+
+
+def test_apply_session_does_not_reread_session_info(main_window, monkeypatch):  # noqa: F811
+    path = _session_with_analysis(main_window)
+    session_manager = main_window.session_manager
+    loaded = session_open.read_session(
+        main_window.profile_manager.store, session_manager, path, main_window.active_profile_config
+    )
+    reads = []
+    real_get_info = session_manager.get_session_info
+    monkeypatch.setattr(
+        session_manager, "get_session_info", lambda p: reads.append(p) or real_get_info(p)
+    )
+    main_window._apply_session(path, loaded)
+
+    assert reads == []
+    assert main_window.session_facts is not None
+
+
 def test_load_existing_session_still_synchronous(main_window):  # noqa: F811
     path = _session_with_analysis(main_window)
     main_window.load_existing_session(path)

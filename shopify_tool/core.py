@@ -985,8 +985,11 @@ def _add_stock_alert(final_df, config):
         )
 
 
-def session_lot_table(store, session_path, config) -> dict | None:
+def session_lot_table(store, session_path, config, *, stock_path: str | None = None) -> dict | None:
     """The session's opening lots (R3, ADR 0015), from its own input/inventory.csv.
+
+    stock_path is that file's local path when the caller has already fetched
+    it (read_session does), so it is read without a second download.
 
     None when the session has no stock file (memory mode, or none copied),
     the file has no lot columns, or it can't be read: lines then export
@@ -995,16 +998,17 @@ def session_lot_table(store, session_path, config) -> dict | None:
     if not session_path:
         return None
     rel = f"{session_state.session_rel(store, session_path)}/input/inventory.csv"
-    if not store.exists(rel):
+    if stock_path is None and not store.exists(rel):
         return None
     config = config or {}
     mappings = config.get("column_mappings") or {}
     try:
         setting = (config.get("settings") or {}).get("stock_csv_delimiter", AUTO_DELIMITER)
         # detect_csv_delimiter sniffs by path, so it gets the store's local path.
+        local = stock_path or str(store.local_path(rel))
         raw = pd.read_csv(
-            io.BytesIO(store.read_bytes(rel)),
-            delimiter=resolve_delimiter(str(store.local_path(rel)), setting, "stock"),
+            local,
+            delimiter=resolve_delimiter(local, setting, "stock"),
             encoding="utf-8-sig",
             dtype=_get_sku_dtype_dict(mappings, "stock"),
         )

@@ -41,7 +41,7 @@ def read_session(store, session_manager, session_path: str, config: dict | None)
     found = _read_analysis(store, session_path)
     if found is not None:
         loaded.analysis_df, loaded.analysis_stats = found
-        loaded.lot_table = core.session_lot_table(store, session_path, config)
+        loaded.lot_table = core.session_lot_table(store, session_path, config, stock_path=loaded.stock_path)
     return loaded
 
 
