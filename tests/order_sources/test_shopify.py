@@ -173,6 +173,19 @@ class TestFetchShopifyOrders:
         assert len(df) == 120
         assert df["Lineitem sku"].tolist() == [line["sku"] for line in lines]
 
+    def test_removed_and_refunded_lines_are_dropped(self):
+        page = _fixture("orders_page_2.json")
+        order = page["data"]["orders"]["nodes"][0]
+        order["lineItems"]["nodes"].append(
+            {"sku": "SKU-REMOVED", "name": "Removed by order edit", "quantity": 0}
+        )
+        seen = []
+        df = _fetch(_serve({None: page}, seen=seen))
+
+        assert "SKU-REMOVED" not in df["Lineitem sku"].tolist()
+        assert "quantity: currentQuantity" in shopify._ORDERS_QUERY
+        assert "quantity: currentQuantity" in shopify._LINE_ITEMS_QUERY
+
     def test_missing_sku_kept(self):
         df = _fetch(_two_order_pages())
 

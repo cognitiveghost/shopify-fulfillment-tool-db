@@ -129,3 +129,21 @@ def test_main_refuses_without_token(monkeypatch, capsys):
         main(["--client", "ALMA", "--shop", SHOP])
     assert exc.value.code == 2
     assert "SHOPIFY_SEED_TOKEN" in capsys.readouterr().err
+
+
+def test_push_seed_waits_out_throttle_and_resumes():
+    seen, calls = [], iter([True, False, False])
+    ok = _responder(seen)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if next(calls):
+            seen.append(request)
+            err = [{"field": None, "message": "Too many attempts. Please try again later."}]
+            return httpx.Response(200, json={"data": {"orderCreate": {"order": None, "userErrors": err}}})
+        return ok(request)
+
+    slept = []
+    push_seed(_plan(3, 4), SHOP, "tok", transport=httpx.MockTransport(handler), resume_from=2, sleep=slept.append)
+
+    assert all("orderCreate" in json.loads(r.content)["query"] for r in seen)
+    assert len(seen) == 3 and slept == [60]
