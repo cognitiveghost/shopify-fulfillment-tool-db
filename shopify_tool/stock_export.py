@@ -436,7 +436,7 @@ def merge_session_stock_exports(
         df = None
         if store.exists(pkl_rel):
             try:
-                df = pd.read_pickle(io.BytesIO(store.read_bytes(pkl_rel)))
+                df = pd.read_pickle(io.BytesIO(store.read_bytes(pkl_rel)))  # noqa: S301 - written by this app; any signed-in PC can write the bucket, so a planted pickle would run code
             except Exception as e:
                 logger.warning(
                     f"[merge_stock client={client_id}] pkl unreadable in {name}, trying xlsx: {e}"

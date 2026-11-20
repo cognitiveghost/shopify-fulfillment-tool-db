@@ -32,9 +32,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.14'
       - name: Install dependencies
@@ -46,8 +46,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
+      - name: Audit dependencies for known vulnerabilities
+        run: |
+          pip install pip-audit
+          pip-audit --skip-editable
       - name: Set up Supabase CLI
-        uses: supabase/setup-cli@v1
+        uses: supabase/setup-cli@1dedf2c611547ede7232d26866dd3c56ab903bbb # v1
         with:
           version: 3.1.0
       - name: Start local Supabase stack
@@ -67,6 +71,26 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: python -m pytest --cov=shopify_tool --cov=gui --cov=shared --cov-report=term --cov-fail-under=90
 
+  dependabot-automerge:
+    name: Auto-merge Dependabot patch and minor updates
+    # After the checks above pass on a Dependabot PR; a major bump waits for a person.
+    needs: verify
+    if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Read the update type
+        id: meta
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+      - name: Merge
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --squash "$PR_URL"
+
   version:
     name: Next Version
     needs: [verify]
@@ -78,12 +102,12 @@ jobs:
       version: ${{ steps.next.outputs.version }}
     steps:
       - name: Check out code with tags
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           fetch-tags: true
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.14'
       - name: Pick the next version from the tags
@@ -112,9 +136,9 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
       - name: Check out code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.14'
       - name: Install dependencies
@@ -191,7 +215,7 @@ jobs:
           $name = if ($env:VERSION) { "FulfilmentTool-DB-$env:VERSION" } else { "FulfilmentTool-DB-gate" }
           Compress-Archive -Path "dist\FulfilmentTool-DB\*" -DestinationPath "$name.zip"
       - name: Upload the bundle
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bundle
           path: FulfilmentTool-DB-*.zip
@@ -213,7 +237,7 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
       - name: Download the bundle
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: bundle
       - name: Checksum
@@ -221,7 +245,7 @@ jobs:
       - name: Attest build provenance
         # Attestations need a public repo on a user account; the -db forks are private.
         if: ${{ !github.event.repository.private }}
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: FulfilmentTool-DB-${{ needs.version.outputs.version }}.zip
       - name: Create the release

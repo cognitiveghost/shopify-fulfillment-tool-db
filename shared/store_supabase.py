@@ -209,7 +209,7 @@ class SupabaseStore(Store):
 
     @staticmethod
     def _backoff(attempt: int) -> None:
-        time.sleep(random.uniform(0, 0.03 * (attempt + 1)))
+        time.sleep(random.uniform(0, 0.03 * (attempt + 1)))  # noqa: S311 - retry jitter, not crypto
 
     # --- JSON ------------------------------------------------------------
     @_guard

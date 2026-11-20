@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 TIMEOUT_SECONDS = 5  # to connect: an unreachable project fails fast
 TRANSFER_SECONDS = 60  # a large upload or history replace needs longer than that
-_TOKEN_USER = "refresh_token"
+_TOKEN_USER = "refresh_token"  # noqa: S105 - keyring entry name, not a secret
 _UNREACHABLE = (httpx.HTTPError, AuthRetryableError)
 
 
