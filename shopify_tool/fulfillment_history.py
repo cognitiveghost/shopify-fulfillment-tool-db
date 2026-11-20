@@ -71,6 +71,15 @@ def load(store: Store, rel: str) -> pd.DataFrame:
     return df
 
 
+def load_with_stamp(store: Store, rel: str) -> tuple[pd.DataFrame, object]:
+    """`load` plus the stamp taken before the read, for `record_session(read=...)`."""
+    try:
+        stamp = _stamp(store, rel)
+    except StoreError as e:
+        raise HistoryUnreadable(f"{rel}: {e}") from e
+    return load(store, rel), stamp
+
+
 def merge_earliest(history_df, new_rows) -> pd.DataFrame:
     """Earliest date per order; NaT sorts last (moved from core, unchanged)."""
     combined = pd.concat([history_df, new_rows])
@@ -125,27 +134,36 @@ def _stamp(store: Store, rel: str):
         return None
 
 
-def record_session(store: Store, rel: str, session, df, today=None, existing_sessions: set[str] | None = None) -> bool:
+def record_session(
+    store: Store, rel: str, session, df, today=None, existing_sessions: set[str] | None = None, read=None
+) -> bool:
     """Replace `session`'s rows with the orders df ships. False = not written.
 
     `existing_sessions`, given by the run only: rows of a session whose folder
     is gone are dropped (AUDIT-07-L1). Rows without a session, and rows of
     sessions that still exist (abandoned ones too), stay. ADR 0012 rule 5:
     nothing is pruned by age.
+
+    `read`, from `load_with_stamp` earlier in the same run, stands in for the
+    first read. Its stamp was taken before its read, so the conflict check holds.
     """
     today = today or datetime.now().astimezone().strftime("%Y-%m-%d")
     try:
         ships = stock_ledger.fulfillable_orders(df)
         for _ in range(WRITE_ATTEMPTS):
-            # Stamp before reading: a write by another PC after this line makes
-            # the stamp stale, so the write below conflicts and re-reads.
-            # ponytail: same stamp caveat as session_state.state_stamp (same-size writes in one file-time tick).
-            loaded = _stamp(store, rel)
-            try:
-                history = load(store, rel)
-            except HistoryUnreadable:
-                logger.warning(f"Fulfillment history unreadable; not writing over it: {rel}", exc_info=True)
-                return False
+            if read is not None:
+                history, loaded = read
+                read = None
+            else:
+                # Stamp before reading: a write by another PC after this line makes
+                # the stamp stale, so the write below conflicts and re-reads.
+                # ponytail: same stamp caveat as session_state.state_stamp (same-size writes in one file-time tick).
+                loaded = _stamp(store, rel)
+                try:
+                    history = load(store, rel)
+                except HistoryUnreadable:
+                    logger.warning(f"Fulfillment history unreadable; not writing over it: {rel}", exc_info=True)
+                    return False
             if existing_sessions is not None:
                 gone = (history["Session"] != "") & ~history["Session"].isin(existing_sessions)
                 if gone.any():

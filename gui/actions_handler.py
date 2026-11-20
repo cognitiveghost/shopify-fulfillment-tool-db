@@ -27,6 +27,14 @@ from shopify_tool.profile_manager import ProfileManagerError
 from shopify_tool.session_manager import SessionManagerError
 
 
+class WritesPending(Exception):
+    """An analysis run found session writes still pending after its flush wait."""
+
+    def __init__(self, pending):
+        super().__init__("writes still pending")
+        self.pending = pending
+
+
 class ActionsHandler(QObject):
     """Handles application logic triggered by user actions from the UI.
 
@@ -174,17 +182,15 @@ class ActionsHandler(QObject):
             )
             return
 
-        # Repeat detection reads history, and inventory memory feeds the run:
-        # the last edit's background writes must land first (AUDIT-07-H2).
         queue = getattr(self.mw, "write_queue", None)
-        if queue is not None and not queue.flush(timeout=30):
-            self.log.warning(f"Analysis not started: writes still pending {queue.pending()}")
-            toast(
-                self.mw,
-                _("Your last changes are still being saved. Run the analysis again in a moment."),
-                role="info",
-            )
-            return
+
+        def flush_then_analyse(*args, **kwargs):
+            # On the worker: the wait can take 30 s on a slow share. Repeat
+            # detection reads history, and inventory memory feeds the run: the
+            # last edit's background writes must land first (AUDIT-07-H2).
+            if queue is not None and not queue.flush(timeout=30):
+                raise WritesPending(queue.pending())
+            return core.run_full_analysis(*args, **kwargs)
 
         self.mw._analysis_running = True
         self.mw._analysis_step = 0
@@ -204,7 +210,7 @@ class ActionsHandler(QObject):
         )
 
         worker = Worker(
-            core.run_full_analysis,
+            flush_then_analyse,
             self.mw.stock_file_path,
             self.mw.orders_file_path,
             None,  # output_dir_path (not used in session mode)
@@ -454,6 +460,14 @@ class ActionsHandler(QObject):
                 traceback.
         """
         _exctype, value, _tb = error
+        if isinstance(value, WritesPending):
+            self.log.warning(f"Analysis not started: writes still pending {value.pending}")
+            toast(
+                self.mw,
+                _("Your last changes are still being saved. Run the analysis again in a moment."),
+                role="info",
+            )
+            return
         self.log.error("An unexpected error occurred in a background task", exc_info=value)
         show_error(self.mw, _("A background task failed"), _("Details are in Logs."))
 
