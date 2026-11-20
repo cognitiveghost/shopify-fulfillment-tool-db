@@ -15,7 +15,8 @@ operations are deleted and then undone.
 
 1. A packing list made in a Supabase session shows up in the barcode generator.
 2. In DB mode, Resume on an incomplete list opens it with its progress. Progress is never lost or counted twice.
-3. Deleting and undoing tag operations in DB mode logs no errors or warnings for normal use.
+3. A Supabase regression test pins that tag edits and their undo log no errors or warnings (item 3 couldn't be
+   reproduced; see §3).
 
 ## Non-goals
 
@@ -132,12 +133,20 @@ Lines that can fire on failure branches, to match against the owner's logs:
 `Failed to recalculate statistics` (`gui/main_window_pyside.py:1397`, fires on every edit when the frame lacks
 `System_note`). Supabase latency on the real PCs (not on the local stack) is the likeliest difference.
 
-The scope of item 3 depends on the owner's answer to the second question round (see Decisions).
+**Scope (owner, 2026-11-20): regression test only.** The repro becomes a permanent F test,
+`@pytest.mark.supabase`: the real `MainWindow` over a `SupabaseStore`, the four tag edits from `EDITS`
+(`bulk_add_tag`, `bulk_remove_tag`, `add_internal_tag`, `remove_internal_tag`), each followed by
+`undo_last_operation`. After the write queue drains, the test asserts no log record at WARNING or above, and
+that the frame is back to how it was before the edit. The frame must carry every column analysis requires
+(`System_note`, `Shipping_Provider`); `FRAME` in `test_undo_roundtrip.py` doesn't, so add them in the new test.
+No product code changes for item 3.
 
 ## Decisions
 
 - **Owner:** item 3 is the errors seen when tag operations are deleted and undone (owner's answer to the log
-  question, 2026-11-20). It stays in this task.
+  question, 2026-11-20). It couldn't be reproduced, so it becomes a regression test only (owner's answer to
+  the second round).
+- **Owner:** design approved, 2026-11-20.
 - **Owner:** in DB mode, a lock left by this same PC counts as ours. Resume reopens it silently. Accepted risk:
   two Packer windows on one PC could both open the same list. That was already true at the database level.
 - *Claude's call:* the barcode fix goes in the store (`SupabaseStore._list`), not in the barcode tool, because
