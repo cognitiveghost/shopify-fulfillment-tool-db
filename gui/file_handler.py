@@ -840,5 +840,13 @@ class FileHandler:
 
 def _write_pulled(store, rel: str, orders_df: pd.DataFrame, sep: str) -> tuple[pd.DataFrame, str]:
     """Worker body: write the kept orders as the session's input; (orders, local path of it)."""
-    store.write_bytes(rel, orders_df.to_csv(index=False, sep=sep).encode("utf-8"))
-    return orders_df, str(store.local_path(rel))
+    data = orders_df.to_csv(index=False, sep=sep).encode("utf-8")
+    store.write_bytes(rel, data)
+    cache_dir = getattr(store, "cache_dir", None)
+    if cache_dir is None:
+        return orders_df, str(store.local_path(rel))  # FileStore: the file just written
+    # SupabaseStore: the bytes are in hand, so fill the cache instead of downloading them back.
+    path = Path(cache_dir) / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return orders_df, str(path)

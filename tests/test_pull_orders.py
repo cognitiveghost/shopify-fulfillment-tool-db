@@ -1,6 +1,7 @@
 """Pull orders: the store's open orders become the session's orders input."""
 
 import logging
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -279,3 +280,26 @@ def test_session_changed_during_dialog_writes_nothing(main_window, monkeypatch, 
     assert not _input_path(main_window, pulled_for).exists()
     assert not _input_path(main_window, other).exists()
     assert main_window.file_handler._pull_worker is None
+
+
+def test_a_db_store_pull_fills_the_cache_without_downloading_back(tmp_path):
+    from gui.file_handler import _write_pulled
+
+    class DbStore:
+        cache_dir = tmp_path / "cache"
+
+        def __init__(self):
+            self.written = {}
+
+        def write_bytes(self, rel, data):
+            self.written[rel] = data
+
+        def local_path(self, rel):
+            raise AssertionError("downloaded the CSV it just uploaded")
+
+    store = DbStore()
+    rel = "Sessions/A/S1/input/orders_export.csv"
+    _df, path = _write_pulled(store, rel, _orders(), ",")
+
+    assert Path(path).read_bytes() == store.written[rel]
+    assert path == str(tmp_path / "cache" / rel)

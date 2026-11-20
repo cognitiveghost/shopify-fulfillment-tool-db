@@ -167,6 +167,7 @@ def run_benchmark(
 
     from gui import main_window_pyside as window_module
     from gui import session_browser_widget as browser_module
+    from gui.file_handler import _write_pulled
     from shared.store_mode import Mode
     from shopify_tool import core, report_jobs, session_state
     from shopify_tool.csv_utils import AUTO_DELIMITER
@@ -253,11 +254,9 @@ def run_benchmark(
         "bench-token",
         transport=httpx.MockTransport(_orders_handler),
     )
-    body = frame.to_csv(index=False).encode("utf-8")
 
     def pull_write():
-        store.write_bytes(f"{rel}/input/orders_export.csv", body)
-        return store.local_path(f"{rel}/input/orders_export.csv")
+        return _write_pulled(store, f"{rel}/input/orders_export.csv", frame, ",")
 
     add("b pull write", pull_write)
 
