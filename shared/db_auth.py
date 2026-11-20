@@ -4,7 +4,7 @@ from collections.abc import Callable
 
 import httpx
 import keyring
-from keyring.errors import KeyringError
+from keyring.errors import KeyringError, PasswordDeleteError
 from supabase_auth.errors import AuthApiError, AuthError, AuthRetryableError
 
 from shared import db_config
@@ -35,7 +35,9 @@ def _keyring_call(action: str, *args):
     """One keyring operation. A missing or failing keyring is logged, never raised."""
     try:
         return getattr(keyring, action)(*args)
-    except KeyringError:  # includes NoKeyringError and PasswordDeleteError
+    except PasswordDeleteError:  # nothing was saved: not a problem
+        return None
+    except KeyringError:  # includes NoKeyringError
         logger.warning("Keyring %s failed; the refresh token is not kept on this PC", action)
         return None
 
