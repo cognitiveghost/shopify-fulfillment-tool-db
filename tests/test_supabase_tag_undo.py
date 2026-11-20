@@ -55,6 +55,8 @@ def test_tag_edit_and_undo_log_nothing(supabase_client, qapp, tmp_path, monkeypa
         caplog.set_level(logging.WARNING)
         edit(win.actions_handler)
         _drain(win)
+        changed = win.analysis_results_df[COMPARED].reset_index(drop=True)
+        assert not changed.equals(before), "the edit did nothing"
         win.undo_last_operation()
         _drain(win)
 
