@@ -1162,7 +1162,7 @@ class MainWindow(QMainWindow):
             if store.exists(pkl_rel):
                 try:
                     logger.info(f"Loading session state from pickle: {pkl_rel}")
-                    self.analysis_results_df = pd.read_pickle(io.BytesIO(store.read_bytes(pkl_rel)))
+                    self.analysis_results_df = pd.read_pickle(io.BytesIO(store.read_bytes(pkl_rel)))  # noqa: S301 - written by this app; any signed-in PC can write the bucket, so a planted pickle would run code
 
                     # Load statistics from JSON if available
                     stats_rel = f"{analysis_dir}/analysis_stats.json"

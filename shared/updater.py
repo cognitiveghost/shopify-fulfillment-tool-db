@@ -69,11 +69,11 @@ def parse_version(text) -> tuple[int, ...] | None:
 
 
 def _get(url: str, accept: str):
-    request = urllib.request.Request(
+    request = urllib.request.Request(  # noqa: S310 - https URLs from the GitHub API only
         url, headers={"Accept": accept, "User-Agent": "shared-updater"}
     )
     try:
-        return urllib.request.urlopen(request, timeout=TIMEOUT_S)
+        return urllib.request.urlopen(request, timeout=TIMEOUT_S)  # noqa: S310 - see above
     except (urllib.error.URLError, OSError) as exc:
         raise UpdateError(NO_CONNECTION, detail=str(exc)) from exc
 

@@ -71,9 +71,9 @@ def _start(argv: list[str] | str, update: bool) -> None:
             # script gets a hidden console instead: its tools then open no windows.
             flags = subprocess.CREATE_NEW_PROCESS_GROUP | (
                 subprocess.CREATE_NO_WINDOW if update else subprocess.DETACHED_PROCESS)
-            subprocess.Popen(argv, close_fds=True, creationflags=flags)
+            subprocess.Popen(argv, close_fds=True, creationflags=flags)  # noqa: S603 - argv is this app's own executable
         else:
-            subprocess.Popen(argv, close_fds=True, start_new_session=True)
+            subprocess.Popen(argv, close_fds=True, start_new_session=True)  # noqa: S603 - argv is this app's own executable
     except OSError:
         _log.exception("Could not start %s after quit", argv)
 

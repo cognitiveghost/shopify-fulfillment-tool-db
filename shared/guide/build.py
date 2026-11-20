@@ -38,7 +38,7 @@ def _css() -> str:
 def _git_commit(folder: Path) -> str:
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"], cwd=folder, capture_output=True, text=True, check=False
+            ["git", "rev-parse", "--short", "HEAD"], cwd=folder, capture_output=True, text=True, check=False  # noqa: S607 - build-time git on PATH
         )
     except OSError:
         return ""

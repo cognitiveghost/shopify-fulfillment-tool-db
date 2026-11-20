@@ -730,11 +730,11 @@ class UIManager:
         try:
             system = platform.system()
             if system == "Windows":
-                subprocess.Popen(["explorer", self.mw.session_path])
+                subprocess.Popen(["explorer", self.mw.session_path])  # noqa: S603, S607 - fixed OS file opener, list args, no shell
             elif system == "Darwin":  # macOS
-                subprocess.Popen(["open", self.mw.session_path])
+                subprocess.Popen(["open", self.mw.session_path])  # noqa: S603, S607 - fixed OS file opener, list args, no shell
             else:  # Linux
-                subprocess.Popen(["xdg-open", self.mw.session_path])
+                subprocess.Popen(["xdg-open", self.mw.session_path])  # noqa: S603, S607 - fixed OS file opener, list args, no shell
         except Exception:
             self.log.exception("Failed to open session folder")
             show_error(
