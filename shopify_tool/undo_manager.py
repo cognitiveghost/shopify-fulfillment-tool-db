@@ -18,10 +18,47 @@ from typing import Any, ClassVar
 
 import pandas as pd
 
+from shared.store import StoreNotFound
 from shopify_tool.session_state import session_rel
 from shopify_tool.stock_ledger import with_stock_left
 
 LEGACY_HISTORY_FILE = "operations_history.json"
+_log = logging.getLogger(__name__)
+
+
+def history_path(store, session_path) -> str:
+    """Store path (POSIX) of this PC's undo history for a session, operations_history_<PC>.json.
+
+    One file per PC (AUDIT-08-U4): a session reopened on another PC does
+    not offer the first PC's undo steps, whose rows it may not hold.
+    """
+    return f"{session_rel(store, session_path)}/analysis/operations_history_{_pc_name()}.json"
+
+
+def read_session_history(store, session_path) -> dict | None:
+    """This PC's saved undo history for a session, or None: no file, or unreadable (logged).
+
+    The legacy shared file is the fallback when this PC has none, and is never
+    written. Reads only: UndoManager.apply_session_history puts the result in place.
+    """
+    if not session_path:
+        return None
+    try:
+        rel = history_path(store, session_path)
+        for candidate in (rel, rel.rpartition("/")[0] + "/" + LEGACY_HISTORY_FILE):
+            try:
+                raw = store.read_bytes(candidate)
+            except StoreNotFound:
+                continue
+            # json.loads on the bytes, not read_json: a corrupt file must
+            # still take the JSONDecodeError branch below, not the generic one.
+            return json.loads(raw)
+        _log.debug("No history file found")
+    except json.JSONDecodeError as e:
+        _log.warning(f"Corrupted history file, starting fresh: {e}")
+    except Exception:
+        _log.exception("Failed to load history")
+    return None
 
 
 def _pc_name() -> str:
@@ -487,8 +524,7 @@ class UndoManager:
         if not self.main_window.session_path:
             return None
 
-        rel = session_rel(self._store(), self.main_window.session_path)
-        return f"{rel}/analysis/operations_history_{_pc_name()}.json"
+        return history_path(self._store(), self.main_window.session_path)
 
     def _submit(self, kind: str, job) -> None:
         """Run `job` on the window's write queue, or now when there is none."""
@@ -548,42 +584,20 @@ class UndoManager:
         self._submit("undo_history_others", delete)
 
     def _load_history(self):
-        """Load this PC's history; the shared file of an older build is the fallback.
+        """Load this PC's history for the open session (the read is read_session_history's)."""
+        session_path = getattr(self.main_window, "session_path", None)
+        data = read_session_history(self._store(), session_path) if session_path else None
+        self.apply_session_history(data)
 
-        The legacy operations_history.json is read only when this PC has no
-        file yet, and is never written.
-        """
-        try:
-            history_path = self._get_history_path()
-            if not history_path:
-                self.log.debug("No history file found")
-                return
-            store = self._store()
-            if not store.exists(history_path):
-                history_path = history_path.rpartition("/")[0] + "/" + LEGACY_HISTORY_FILE
-
-            if not store.exists(history_path):
-                self.log.debug("No history file found")
-                return
-
-            # json.loads on the bytes, not read_json: a corrupt file must
-            # still take the JSONDecodeError branch below, not the generic one.
-            history_data = json.loads(store.read_bytes(history_path))
-
-            self.operations = history_data.get("operations", [])
-            self.current_position = history_data.get("current_position", 0)
-            self.max_history = history_data.get("max_history", 20)
-
+    def apply_session_history(self, data: dict | None) -> None:
+        """Put a history from read_session_history in place. None leaves no undo steps."""
+        self.operations = []
+        self.current_position = 0
+        if data is not None:
+            self.operations = data.get("operations", [])
+            self.current_position = data.get("current_position", 0)
+            self.max_history = data.get("max_history", 20)
             self.log.info(f"Loaded {len(self.operations)} operations from history")
-
-        except json.JSONDecodeError as e:
-            self.log.warning(f"Corrupted history file, starting fresh: {e}")
-            self.operations = []
-            self.current_position = 0
-        except Exception:
-            self.log.exception("Failed to load history")
-            self.operations = []
-            self.current_position = 0
 
     def clear_history(self):
         """Clear all undo history: this PC's, and every other PC's for the session.
@@ -623,8 +637,6 @@ class UndoManager:
 
         This restores undo operations from the session's history file.
         """
-        self.operations = []
-        self.current_position = 0
         self._load_history()
         self.log.info(f"Reloaded undo history: {len(self.operations)} operations")
 

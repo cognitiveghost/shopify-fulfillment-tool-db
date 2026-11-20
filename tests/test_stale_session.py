@@ -49,6 +49,8 @@ def _orders(*statuses):
 
 def _open_with_state(win, df):
     path = win.session_manager.create_session("acme")
+    # A saved state always carries System_note; without it the stats recalculation fails.
+    df = df if "System_note" in df else df.assign(System_note="")
     session_state.save_state(win.profile_manager.store, path, df, None)
     win.load_existing_session(path)
     return path

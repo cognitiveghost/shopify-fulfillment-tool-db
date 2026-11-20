@@ -9,6 +9,32 @@ import pandas as pd
 import pytest
 from PySide6.QtWidgets import QApplication
 
+from shopify_tool import session_state
+
+
+def _restore_inputs(win, path):
+    """What opening the session does to its inputs: the read, then the apply."""
+    win._apply_session(path, win._read_session(path))
+
+
+def _saved_analysis(win, path, order, final_stock):
+    """Save an analysis as the session's state, as a run or an edit leaves it on disk."""
+    frame = pd.DataFrame(
+        {
+            "Order_Number": [order],
+            "Order_Fulfillment_Status": ["Fulfillable"],
+            "Shipping_Provider": ["DHL"],
+            "SKU": ["A"],
+            "Quantity": [2],
+            "System_note": [""],
+            "Internal_Tags": ["[]"],
+            "Lot_Details": [None],
+            "Stock": [5],
+            "Final_Stock": [final_stock],
+        }
+    )
+    session_state.save_state(win.profile_manager.store, path, frame, None)
+
 
 @pytest.fixture(scope="module", autouse=True)
 def qapp():
@@ -61,7 +87,7 @@ def _session_with_inputs(win):
 
 def test_restoring_a_session_points_at_the_files_it_ran_on(main_window):
     path = _session_with_inputs(main_window)
-    main_window._restore_session_inputs(path)
+    _restore_inputs(main_window, path)
 
     assert main_window.stock_file_path is not None
     assert main_window.stock_file_path.endswith("inventory.csv")
@@ -76,7 +102,7 @@ def test_the_orders_file_is_deliberately_not_restored(main_window):
     session's results with no confirm. Owner's call, 2026-09-20."""
     path = _session_with_inputs(main_window)
     main_window.session_path = path
-    main_window._restore_session_inputs(path)
+    _restore_inputs(main_window, path)
     main_window.update_ui_state()
 
     assert main_window.orders_file_path is None
@@ -89,7 +115,7 @@ def test_add_product_is_reachable_in_a_restored_session(main_window):
     main_window.analysis_results_df = pd.DataFrame(
         {"Order_Number": [1], "SKU": ["A"], "Final_Stock": [4]}
     )
-    main_window._restore_session_inputs(path)
+    _restore_inputs(main_window, path)
     main_window.update_ui_state()
 
     assert main_window.add_product_button_tab2.isEnabled() is True
@@ -100,7 +126,7 @@ def test_a_session_whose_input_files_are_gone_restores_nothing(main_window):
     # Seed the path first, or this passes against an empty method body.
     main_window.stock_file_path = "/gone/inventory.csv"
 
-    main_window._restore_session_inputs(path)
+    _restore_inputs(main_window, path)
 
     assert main_window.stock_file_path == "/gone/inventory.csv"
     assert main_window.stock_slot.is_valid is False
@@ -121,20 +147,7 @@ def test_opening_a_session_re_derives_stock_left(main_window):
     drift; opening it makes the ledger true again (spec 2026-09-25 D4)."""
     path = _session_with_inputs(main_window)
 
-    def load_stale_analysis(_path):
-        main_window.analysis_results_df = pd.DataFrame(
-            {
-                "Order_Number": ["#1001"],
-                "SKU": ["A"],
-                "Quantity": [2],
-                "Order_Fulfillment_Status": ["Fulfillable"],
-                "Stock": [5],
-                "Final_Stock": [5.0],
-            }
-        )
-        return True
-
-    main_window._load_session_analysis = load_stale_analysis
+    _saved_analysis(main_window, path, "#1001", final_stock=5.0)
     main_window.load_existing_session(path)
 
     assert main_window.analysis_results_df["Final_Stock"].tolist() == [3.0]
@@ -146,20 +159,7 @@ def test_opening_a_session_ends_on_results_with_its_orders_painted(main_window, 
 
     path = _session_with_inputs(main_window)
 
-    def load_analysis(_path):
-        main_window.analysis_results_df = pd.DataFrame(
-            {
-                "Order_Number": ["#NEWSESSION-1001"],
-                "SKU": ["A"],
-                "Quantity": [2],
-                "Order_Fulfillment_Status": ["Fulfillable"],
-                "Stock": [5],
-                "Final_Stock": [3.0],
-            }
-        )
-        return True
-
-    main_window._load_session_analysis = load_analysis
+    _saved_analysis(main_window, path, "#NEWSESSION-1001", final_stock=3.0)
     main_window.main_tabs.setCurrentIndex(0)
     on_results, on_setup = [], []
     main_window.results_bridge.toastRaised.connect(lambda text, undo: on_results.append(text))
