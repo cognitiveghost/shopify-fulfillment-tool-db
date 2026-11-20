@@ -393,7 +393,10 @@
   "Import SKUs from Stock CSV": "Импорт на SKU от CSV на наличности",
   "Import Sets from CSV": "Импорт на комплекти от CSV",
   "Import from CSV…": "Импорт от CSV…",
-  "Import {n} orders": "Импортиране на {n} поръчки",
+  "Import {n} order": [
+    "Импортиране на {n} поръчка",
+    "Импортиране на {n} поръчки"
+  ],
   "Imported {sets} from {file}": "Импортирани са {sets} от {file}",
   "Import…": "Импорт…",
   "In progress": "В ход",
@@ -1344,7 +1347,10 @@
   "{row} {n}": "{row} {n}",
   "{rules} · {on} on": "{rules} · {on} включени",
   "{saved}. QR labels too.": "{saved}. QR етикетите също.",
-  "{selected} of {total} orders selected": "Избрани поръчки: {selected} от {total}",
+  "{selected} of {n} order selected": [
+    "Избрани поръчки: {selected} от {n}",
+    "Избрани поръчки: {selected} от {n}"
+  ],
   "{sentence} {example}.": "{sentence} {example}.",
   "{shown} of {total}": "{shown} от {total}",
   "{shown} shown · {hidden} hidden": "{shown} показани · {hidden} скрити",

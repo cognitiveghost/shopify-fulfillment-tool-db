@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from shared.components.filterbar import FilterBar
-from shared.i18n import _
+from shared.i18n import _, _n
 from shared.theme import apply_dialog_button_roles, font_css
 
 COLUMNS = ["Order", "Date", "Country", "Shipping", "Lines", "Units", "Tags"]
@@ -127,9 +127,13 @@ class PullPreviewDialog(QDialog):
             self.table.setRowHidden(row, not matches)
 
     def _set_visible_checked(self, state: Qt.CheckState) -> None:
+        self.table.blockSignals(True)  # one refresh, not one per row
         for row in range(self.table.rowCount()):
             if not self.table.isRowHidden(row):
                 self.table.item(row, 0).setCheckState(state)
+        self.table.blockSignals(False)
+        self.table.viewport().update()
+        self._refresh()
 
     def select_all(self) -> None:
         self._set_visible_checked(Qt.CheckState.Checked)
@@ -140,9 +144,14 @@ class PullPreviewDialog(QDialog):
     def _refresh(self) -> None:
         count = len(self.selected())
         self.count_label.setText(
-            _("{selected} of {total} orders selected", selected=count, total=self._total)
+            _n(
+                "{selected} of {n} order selected",
+                "{selected} of {n} orders selected",
+                self._total,
+                selected=count,
+            )
         )
-        self.import_button.setText(_("Import {n} orders", n=count))
+        self.import_button.setText(_n("Import {n} order", "Import {n} orders", count))
         self.import_button.setEnabled(count > 0)
 
     @classmethod

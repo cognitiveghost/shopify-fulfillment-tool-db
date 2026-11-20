@@ -411,8 +411,8 @@ class UIManager:
         )
         if not confirmed:
             return
-        db_auth.forget("ShopifyTool-DB")
-        self.mw.close()
+        if self.mw.close():  # a vetoed close keeps the sign-in this run still uses
+            db_auth.forget("ShopifyTool-DB")
 
     def _open_user_guide(self):
         """The Fulfilment user guide, from the ⋯ menu or F1."""

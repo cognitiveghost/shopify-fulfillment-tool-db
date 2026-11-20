@@ -65,7 +65,7 @@ def test_sign_out_confirm_forgets_and_closes(window_in_mode, monkeypatch):
     forgotten, closed = [], []
     monkeypatch.setattr(ConfirmDialog, "exec", lambda self: 1)
     monkeypatch.setattr(db_auth, "forget", lambda app_name: forgotten.append(app_name))
-    monkeypatch.setattr(win, "close", lambda: closed.append(True))
+    monkeypatch.setattr(win, "close", lambda: closed.append(True) or True)
 
     _sign_out_action(win).trigger()
 
@@ -78,9 +78,21 @@ def test_sign_out_cancel_does_nothing(window_in_mode, monkeypatch):
     forgotten, closed = [], []
     monkeypatch.setattr(ConfirmDialog, "exec", lambda self: 0)
     monkeypatch.setattr(db_auth, "forget", lambda app_name: forgotten.append(app_name))
-    monkeypatch.setattr(win, "close", lambda: closed.append(True))
+    monkeypatch.setattr(win, "close", lambda: closed.append(True) or True)
 
     _sign_out_action(win).trigger()
 
     assert forgotten == []
     assert closed == []
+
+
+def test_sign_out_keeps_the_sign_in_when_close_is_vetoed(window_in_mode, monkeypatch):
+    win = window_in_mode(Mode.SUPABASE)
+    forgotten = []
+    monkeypatch.setattr(ConfirmDialog, "exec", lambda self: 1)
+    monkeypatch.setattr(db_auth, "forget", lambda app_name: forgotten.append(app_name))
+    monkeypatch.setattr(win, "close", lambda: False)
+
+    _sign_out_action(win).trigger()
+
+    assert forgotten == []
