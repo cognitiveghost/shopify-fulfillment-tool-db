@@ -219,6 +219,8 @@ jobs:
       - name: Checksum
         run: sha256sum "FulfilmentTool-DB-$VERSION.zip" > "FulfilmentTool-DB-$VERSION.zip.sha256"
       - name: Attest build provenance
+        # Attestations need a public repo on a user account; the -db forks are private.
+        if: ${{ !github.event.repository.private }}
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: FulfilmentTool-DB-${{ needs.version.outputs.version }}.zip
