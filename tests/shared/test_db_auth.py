@@ -5,9 +5,17 @@ import httpx
 import keyring
 import pytest
 from keyring.backend import KeyringBackend
+from keyring.errors import NoKeyringError
 from supabase_auth.errors import AuthApiError
 
 from shared import db_auth
+
+
+@pytest.fixture(autouse=True)
+def fresh_run_tokens():
+    db_auth._run_tokens.clear()
+    yield
+    db_auth._run_tokens.clear()
 
 
 class MemKeyring(KeyringBackend):
@@ -72,7 +80,7 @@ def test_stored_token_means_no_prompt(kr):
 
 def test_background_refresh_saves_the_rotated_token(kr):
     auth = FakeAuth(sign_in=lambda c: _session("first"))
-    assert db_auth.connect("App", lambda _error: ("a@b.c", "pw"), _factory(auth)) is not None
+    assert db_auth.connect("App", lambda _error: ("a@b.c", "pw", True), _factory(auth)) is not None
     for listener in auth.listeners:
         listener("TOKEN_REFRESHED", SimpleNamespace(refresh_token="second"))
     assert kr.d[("App-db", "refresh_token")] == "second"
@@ -84,7 +92,7 @@ def test_no_token_prompts_once_and_saves(kr):
 
     def prompt(error):
         prompts.append(error)
-        return "a@b.c", "pw"
+        return "a@b.c", "pw", True
 
     assert db_auth.connect("App", prompt, _factory(auth)) is not None
     assert prompts == [None] and kr.d[("App-db", "refresh_token")] == "fresh"
@@ -106,7 +114,7 @@ def test_refused_saved_token_prompts_with_expired_message(kr):
 
     def prompt(error):
         errors.append(error)
-        return "a@b.c", "pw"
+        return "a@b.c", "pw", True
 
     auth = FakeAuth(refresh=refuse, sign_in=lambda c: _session("new"))
     assert db_auth.connect("App", prompt, _factory(auth)) is not None
@@ -157,3 +165,95 @@ def test_unreachable_returns_none_quickly(kr):
 
 def test_http_client_has_five_second_timeout():
     assert db_auth.TIMEOUT_SECONDS == 5
+
+
+def test_unticked_sign_in_saves_nothing_and_clears_old(kr):
+    kr.d[("App-db", "refresh_token")] = "stale"
+
+    def refuse(_):
+        raise AuthApiError("bad token", 400, "refresh_token_not_found")
+
+    auth = FakeAuth(refresh=refuse, sign_in=lambda c: _session("fresh"))
+    assert db_auth.connect("App", lambda _e: ("a@b.c", "pw", False), _factory(auth)) is not None
+    assert ("App-db", "refresh_token") not in kr.d
+
+
+def test_ticked_sign_in_saves_token(kr):
+    auth = FakeAuth(sign_in=lambda c: _session("first"))
+    assert db_auth.connect("App", lambda _e: ("a@b.c", "pw", True), _factory(auth)) is not None
+    assert kr.d[("App-db", "refresh_token")] == "first"
+
+
+def test_two_tuple_prompt_means_not_remembered(kr):
+    auth = FakeAuth(sign_in=lambda c: _session("first"))
+    assert db_auth.connect("App", lambda _e: ("a@b.c", "pw"), _factory(auth)) is not None
+    assert ("App-db", "refresh_token") not in kr.d
+
+
+def test_refresh_event_writes_keyring_only_when_remembering(kr):
+    auth = FakeAuth(sign_in=lambda c: _session("first"))
+    db_auth.connect("App", lambda _e: ("a@b.c", "pw", False), _factory(auth))
+    for listener in auth.listeners:
+        listener("TOKEN_REFRESHED", SimpleNamespace(refresh_token="second"))
+    assert ("App-db", "refresh_token") not in kr.d
+
+    kr.d[("App-db", "refresh_token")] = "old"
+    auth = FakeAuth(refresh=lambda t: _session("rotated"))
+    assert db_auth.connect("App", lambda _e: None, _factory(auth)) is not None
+    for listener in auth.listeners:
+        listener("TOKEN_REFRESHED", SimpleNamespace(refresh_token="second"))
+    assert kr.d[("App-db", "refresh_token")] == "second"
+
+
+def test_second_connect_reuses_run_token(kr):
+    auth = FakeAuth(sign_in=lambda c: _session("first"))
+    assert db_auth.connect("App", lambda _e: ("a@b.c", "pw", False), _factory(auth)) is not None
+
+    prompts = []
+    auth = FakeAuth(refresh=lambda t: _session("second"))
+    client = db_auth.connect("App", lambda e: prompts.append(e), _factory(auth))
+    assert client is not None and prompts == []
+    assert auth.calls == [("refresh", "first")]
+
+
+def test_forget_clears_keyring_and_run_token(kr):
+    auth = FakeAuth(sign_in=lambda c: _session("first"))
+    assert db_auth.connect("App", lambda _e: ("a@b.c", "pw", True), _factory(auth)) is not None
+
+    db_auth.forget("App")
+    assert ("App-db", "refresh_token") not in kr.d
+
+    prompts = []
+    auth = FakeAuth(sign_in=lambda c: _session("again"))
+
+    def prompt(error):
+        prompts.append(error)
+        return "a@b.c", "pw", False
+
+    assert db_auth.connect("App", prompt, _factory(auth)) is not None
+    assert prompts == [None] and auth.calls == [("sign_in", "a@b.c")]
+
+
+class BrokenKeyring(KeyringBackend):
+    priority = 1
+
+    def get_password(self, service, user):
+        raise NoKeyringError("no backend")
+
+    def set_password(self, service, user, pw):
+        raise NoKeyringError("no backend")
+
+    def delete_password(self, service, user):
+        raise NoKeyringError("no backend")
+
+
+def test_no_keyring_never_raises():
+    old = keyring.get_keyring()
+    keyring.set_keyring(BrokenKeyring())
+    try:
+        auth = FakeAuth(refresh=lambda t: _session("t"), sign_in=lambda c: _session("t"))
+        assert db_auth.connect("App", lambda _e: ("a@b.c", "pw", False), _factory(auth)) is not None
+        assert db_auth.connect("App", lambda _e: ("a@b.c", "pw", True), _factory(auth)) is not None
+        db_auth.forget("App")
+    finally:
+        keyring.set_keyring(old)

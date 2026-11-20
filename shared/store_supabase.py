@@ -429,8 +429,13 @@ class SupabaseStore(Store):
             return self._exists_history(r)
         if r.kind == "fulfillment_history":
             return self._history_version(r.key["client_id"]) > 0
-        cur = self._read_row(_row_for(rel))
-        return cur is not None and cur[0] is not None
+        return self._row_has_value(_row_for(rel))
+
+    def _row_has_value(self, row: _Row) -> bool:
+        """True iff the cell's row exists and the cell is not NULL. Fetches no cell value."""
+        res = (self._t(row.table).select("version").match(row.match)
+               .not_.is_(row.col, "null").limit(1).execute())
+        return bool(res.data)
 
     def _exists_history(self, r) -> bool:
         res = (self._t("client_config_history").select("id").eq("client_id", r.key["client_id"])
@@ -557,10 +562,11 @@ class SupabaseStore(Store):
             return [n for n in self._col("sessions", "name", client_id=m.group(1), archived=False)]
         m = re.fullmatch(r"Sessions/CLIENT_([^/]+)/([^/]+)/packing_lists", rel)
         if m:
-            names = self._col("packing_lists", "name", client_id=m.group(1), session_name=m.group(2), withdrawn=False)
-            return [f"{n}.json" for n in names] + (["withdrawn"] if self._col(
-                "packing_lists", "name", client_id=m.group(1), session_name=m.group(2), withdrawn=True) else []) \
-                + self._storage_ls(rel)
+            # One query for both halves: withdrawn is NOT NULL, so the split below matches the two eq filters.
+            rows = self._all(lambda: self._t("packing_lists").select("name,withdrawn", count="exact")
+                             .eq("client_id", m.group(1)).eq("session_name", m.group(2)).order("name"))
+            return [f"{r['name']}.json" for r in rows if not r["withdrawn"]] \
+                + (["withdrawn"] if any(r["withdrawn"] for r in rows) else []) + self._storage_ls(rel)
         m = re.fullmatch(r"Sessions/CLIENT_([^/]+)/([^/]+)/packing_lists/withdrawn", rel)
         if m:
             return [f"{n}.json" for n in self._col(

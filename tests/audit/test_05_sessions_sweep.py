@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QApplication
 import gui.main_window_pyside as main_window_module
 import gui.session_browser_widget as browser_module
 import shared.store as store_mod
+from gui import session_open
 from gui.main_window_pyside import MainWindow
 from shared.atomic_write import atomic_write_json
 from shared.file_lock import locked_file
@@ -58,7 +59,7 @@ def _orders(*statuses):
 
 
 def _pc(session_path, df, session_manager=None):
-    """What save_session_state and _load_session_analysis read off a window.
+    """What save_session_state and session_open.read_session read off a window.
 
     Both are plain methods over four attributes, so a namespace stands in for
     one PC's MainWindow without building the whole window twice.
@@ -76,7 +77,16 @@ def _pc(session_path, df, session_manager=None):
 def _open_on_a_pc(session_path):
     """One PC opening the session: the loaded namespace, stamp included."""
     pc = _pc(session_path, None)
-    assert MainWindow._load_session_analysis(pc, session_path)
+    # Only the session's files matter here: where its inputs sit and its info.
+    files = SimpleNamespace(
+        get_session_info=lambda _path: {"statistics": {}},
+        get_input_dir=lambda path: Path(path) / "input",
+    )
+    loaded = session_open.read_session(pc.profile_manager.store, files, str(session_path), None)
+    assert loaded.analysis_df is not None
+    pc.analysis_results_df = loaded.analysis_df
+    pc.analysis_stats = loaded.analysis_stats
+    pc._state_stamp = loaded.state_stamp
     return pc
 
 

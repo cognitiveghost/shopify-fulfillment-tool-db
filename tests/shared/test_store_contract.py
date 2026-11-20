@@ -342,3 +342,11 @@ def test_packing_lists_lists_xlsx_with_json(store):
     store.write_bytes(S + "packing_lists/withdrawn/OLD.xlsx", b"xlsx")
     assert store.list_dir(S + "packing_lists") == ["DHL.json", "DHL.xlsx", "withdrawn"]
     assert store.list_dir(S + "packing_lists/withdrawn") == ["OLD.json", "OLD.xlsx"]
+
+
+def test_packing_lists_split_live_and_withdrawn_in_name_order(store):
+    store.write_json(S + "packing_lists/b.json", {"orders": []})
+    store.write_json(S + "packing_lists/a.json", {"orders": []})
+    store.write_json(S + "packing_lists/withdrawn/c.json", {"orders": []})
+    assert store.list_dir(S + "packing_lists") == ["a.json", "b.json", "withdrawn"]
+    assert store.list_dir(S + "packing_lists/withdrawn") == ["c.json"]

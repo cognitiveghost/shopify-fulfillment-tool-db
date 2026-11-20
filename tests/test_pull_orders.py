@@ -1,12 +1,14 @@
 """Pull orders: the store's open orders become the session's orders input."""
 
 import logging
+from pathlib import Path
 
 import pandas as pd
 import pytest
 from PySide6.QtCore import QThreadPool
 from PySide6.QtWidgets import QApplication
 
+from gui.pull_preview_dialog import PullPreviewDialog
 from shopify_tool.order_sources import SHOPIFY_CSV_HEADERS, OrderSourceError
 
 TOKEN = "shpat_secret_token_value"
@@ -56,18 +58,46 @@ def errors(monkeypatch):
     return shown
 
 
+def _names(df: pd.DataFrame) -> list[str]:
+    return list(df["Name"].unique())
+
+
+def _stub_dialog(monkeypatch, answer) -> list:
+    """Stub the preview: `answer(df)` gives the ticked names, None for Cancel. Returns the calls."""
+    calls = []
+
+    def ask(cls, parent, df, shop):
+        calls.append(df)
+        return answer(df)
+
+    monkeypatch.setattr(PullPreviewDialog, "ask", classmethod(ask))
+    return calls
+
+
+@pytest.fixture(autouse=True)
+def dialog_ticks_all(monkeypatch):
+    return _stub_dialog(monkeypatch, _names)
+
+
 def _pull(win):
     win.file_handler.pull_orders()
-    QThreadPool.globalInstance().waitForDone()
-    QApplication.processEvents()
+    # Fetch, then (after the preview) write: each is a worker whose result arrives on the event loop.
+    for _ in range(3):
+        QThreadPool.globalInstance().waitForDone()
+        QApplication.processEvents()
+
+
+def _input_path(win, session_path=None):
+    from shopify_tool import session_state
+
+    store = win.profile_manager.store
+    session_path = session_path or win.session_path
+    rel = f"{session_state.session_rel(store, session_path)}/input/orders_export.csv"
+    return store.local_path(rel)
 
 
 def _input(win) -> str:
-    store = win.profile_manager.store
-    from shopify_tool import session_state
-
-    rel = f"{session_state.session_rel(store, win.session_path)}/input/orders_export.csv"
-    return store.local_path(rel).read_text(encoding="utf-8")
+    return _input_path(win).read_text(encoding="utf-8")
 
 
 def test_pull_writes_input_and_runs_analysis(main_window, monkeypatch, errors):
@@ -166,8 +196,7 @@ def test_a_pull_finishing_after_the_session_changed_is_not_loaded(main_window, m
     _pull(main_window)
 
     assert main_window.orders_file_path is None
-    main_window.session_path = pulled_for
-    assert len(_input(main_window).splitlines()) == 3  # kept in the session it was for
+    assert not _input_path(main_window, pulled_for).exists()  # nothing written until the preview is confirmed
 
 
 def test_no_open_orders_says_so_and_loads_nothing(main_window, monkeypatch, errors):
@@ -180,3 +209,97 @@ def test_no_open_orders_says_so_and_loads_nothing(main_window, monkeypatch, erro
     assert not errors
     assert shown == ["No open unfulfilled orders in fulfil-trial.myshopify.com"]
     assert main_window.orders_file_path is None
+
+
+def test_subset_writes_only_selected(main_window, monkeypatch, errors):
+    shown = []
+    monkeypatch.setattr("gui.file_handler.toast", lambda _src, text: shown.append(text))
+    _stub_dialog(monkeypatch, lambda df: ["#1001"])
+    monkeypatch.setattr("gui.file_handler.fetch_orders", lambda source: _orders(3))
+
+    _pull(main_window)
+
+    assert not errors
+    written = pd.read_csv(_input_path(main_window), dtype=str)
+    assert set(written["Name"]) == {"#1001"}
+    assert len(written) == 2  # #1001's two lines
+    assert shown == ["Pulled 1 orders (2 lines) from fulfil-trial.myshopify.com"]
+
+
+def test_cancel_writes_nothing(main_window, monkeypatch, errors):
+    monkeypatch.setattr("gui.file_handler.fetch_orders", lambda source: _orders(3))
+    _pull(main_window)  # an earlier input, kept
+    before = _input_path(main_window).read_bytes()
+
+    _stub_dialog(monkeypatch, lambda df: None)
+    monkeypatch.setattr("gui.file_handler.fetch_orders", lambda source: _orders(2))
+    _pull(main_window)
+
+    assert not errors
+    assert _input_path(main_window).read_bytes() == before
+    assert main_window.file_handler._pull_worker is None
+
+
+def test_cancel_then_pull_again(main_window, monkeypatch, errors):
+    calls = _stub_dialog(monkeypatch, lambda df: None)
+    monkeypatch.setattr("gui.file_handler.fetch_orders", lambda source: _orders(3))
+
+    _pull(main_window)
+    _pull(main_window)
+
+    assert not errors
+    assert len(calls) == 2
+
+
+def test_empty_shows_toast_no_dialog(main_window, monkeypatch, errors):
+    shown = []
+    monkeypatch.setattr("gui.file_handler.toast", lambda _src, text: shown.append(text))
+    calls = _stub_dialog(monkeypatch, lambda df: [])
+    monkeypatch.setattr("gui.file_handler.fetch_orders", lambda source: _orders(0))
+
+    _pull(main_window)
+
+    assert calls == []
+    assert shown == ["No open unfulfilled orders in fulfil-trial.myshopify.com"]
+
+
+def test_session_changed_during_dialog_writes_nothing(main_window, monkeypatch, errors):
+    pulled_for = main_window.session_path
+    other = main_window.session_manager.create_session("acme")
+
+    def switch_then_tick_all(df):
+        main_window.session_path = other  # the user opened another session while the preview was up
+        return _names(df)
+
+    _stub_dialog(monkeypatch, switch_then_tick_all)
+    monkeypatch.setattr("gui.file_handler.fetch_orders", lambda source: _orders(2))
+
+    _pull(main_window)
+
+    assert main_window.orders_file_path is None
+    assert not _input_path(main_window, pulled_for).exists()
+    assert not _input_path(main_window, other).exists()
+    assert main_window.file_handler._pull_worker is None
+
+
+def test_a_db_store_pull_fills_the_cache_without_downloading_back(tmp_path):
+    from gui.file_handler import _write_pulled
+
+    class DbStore:
+        cache_dir = tmp_path / "cache"
+
+        def __init__(self):
+            self.written = {}
+
+        def write_bytes(self, rel, data):
+            self.written[rel] = data
+
+        def local_path(self, rel):
+            raise AssertionError("downloaded the CSV it just uploaded")
+
+    store = DbStore()
+    rel = "Sessions/A/S1/input/orders_export.csv"
+    _df, path = _write_pulled(store, rel, _orders(), ",")
+
+    assert Path(path).read_bytes() == store.written[rel]
+    assert path == str(tmp_path / "cache" / rel)

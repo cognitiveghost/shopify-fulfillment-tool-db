@@ -21,11 +21,14 @@ from gui.orders_view import summary_text
 from gui.setup_state import FileSlot, MemoryFacts, RunFacts, SessionFacts, setup_state
 from gui.shortcuts_dialog import ShortcutsDialog
 from gui.worker import Worker
+from shared import db_auth
+from shared.components.confirm_dialog import ConfirmDialog
 from shared.components.language_segment import switch_language
 from shared.guide.help import open_guide
 from shared.i18n import N_, _
 from shared.icons import icon
 from shared.server_connection import ConnectionSettingsDialog
+from shared.store_mode import Mode
 from shared.theme import on_theme_changed
 from shopify_tool.profile_manager import PROD_SERVER_PATH
 
@@ -390,11 +393,26 @@ class UIManager:
         menu.add_section(_("THIS PC"))
         menu.add_item(_("User guide"), self._open_user_guide)
         menu.add_item(_("Server connection…"), self._open_connection_settings)
+        if self.mw.store_mode is Mode.SUPABASE:
+            menu.add_item(_("Sign out"), self._sign_out)
         menu.add_item(_("Check for updates…"), lambda: self.mw.update_flow.check_now())
         menu.add_item(_("Keyboard shortcuts…"), lambda: ShortcutsDialog(self.mw).exec())
 
     def _refresh_overflow(self) -> None:
         self._open_folder_item.setEnabled(bool(getattr(self.mw, "session_path", None)))
+
+    def _sign_out(self) -> None:
+        """Forget this PC's database sign-in, then close. No server-side sign-out: that would sign out other PCs."""
+        confirmed = ConfirmDialog.ask(
+            self.mw,
+            title=_("Sign out of the database on this PC?"),
+            body=_("The app closes, and the next start asks for your email and password."),
+            verb=_("Sign out"),
+        )
+        if not confirmed:
+            return
+        if self.mw.close():  # a vetoed close keeps the sign-in this run still uses
+            db_auth.forget("ShopifyTool-DB")
 
     def _open_user_guide(self):
         """The Fulfilment user guide, from the ⋯ menu or F1."""
@@ -645,21 +663,25 @@ class UIManager:
         self.mw.generate_reports_button_tab2.setEnabled(enabled)
         self.mw.results_bridge.set_export_enabled(enabled)
 
-    def update_session_chips(self) -> None:
+    def update_session_chips(self, info: dict | None = None) -> None:
         """What the bar and the Setup page say about the open session's times.
 
         `Analysed 09:33` and `Stock file 19 h old` for the bar; when the
         session was opened and analysed for the page. Stock age is measured at
         analysis time, not now: it qualifies the analysis. The stock copy in
         the session keeps the source file's mtime (shutil.copy2 in core.py).
+
+        info is the session_info already read for this session (a worker's
+        read on open); None reads it here, on the UI thread.
         """
         bar = self.mw.command_bar
         session_path = getattr(self.mw, "session_path", None)
-        info = (
-            self.mw.session_manager.get_session_info(session_path)
-            if session_path
-            else None
-        ) or {}
+        if info is None:
+            info = (
+                self.mw.session_manager.get_session_info(session_path)
+                if session_path
+                else None
+            ) or {}
         analysed = _parse_time(info.get("analysis_completed_at"))
         # The one read of session_info.json: refresh_setup never touches the share.
         self.mw.session_facts = (

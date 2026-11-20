@@ -816,7 +816,7 @@ def _load_history_data(
     client_id: str | None,
     profile_manager: Any | None,
     config: dict,
-) -> tuple[pd.DataFrame, bool]:
+) -> tuple[pd.DataFrame, bool, tuple | None]:
     """Loads fulfillment history for repeat detection.
 
     Args:
@@ -826,25 +826,27 @@ def _load_history_data(
         config: Configuration dict (may contain test_history_df)
 
     Returns:
-        (history_df, readable). readable is False when the file exists but
+        (history_df, readable, read). readable is False when the file exists but
         can't be read; history_df is then empty, and the run must neither
-        check nor write repeats (AUDIT-02-6). Never raises.
+        check nor write repeats (AUDIT-02-6). Never raises. read is the
+        (frame, stamp) pair `record_session` reuses, None in test mode or when
+        unreadable.
     """
     logger.info("Loading fulfillment history...")
 
     if orders_file_path is None:  # test mode
-        return config.get("test_history_df", pd.DataFrame({"Order_Number": []})), True
+        return config.get("test_history_df", pd.DataFrame({"Order_Number": []})), True, None
 
     store, rel = fulfillment_history.history_location(profile_manager, client_id)
     try:
-        df = fulfillment_history.load(store, rel)
+        df, stamp = fulfillment_history.load_with_stamp(store, rel)
     except fulfillment_history.HistoryUnreadable:
         logger.warning(
             "Fulfillment history unreadable; repeats not checked this run", exc_info=True
         )
-        return pd.DataFrame(columns=fulfillment_history.COLUMNS), False
+        return pd.DataFrame(columns=fulfillment_history.COLUMNS), False, None
     logger.info(f"Loaded {len(df)} history rows from {rel}")
-    return df, True
+    return df, True, (df, stamp)
 
 
 def effective_additional_columns(column_mappings, client_config) -> list:
@@ -985,8 +987,11 @@ def _add_stock_alert(final_df, config):
         )
 
 
-def session_lot_table(store, session_path, config) -> dict | None:
+def session_lot_table(store, session_path, config, *, stock_path: str | None = None) -> dict | None:
     """The session's opening lots (R3, ADR 0015), from its own input/inventory.csv.
+
+    stock_path is that file's local path when the caller has already fetched
+    it (read_session does), so it is read without a second download.
 
     None when the session has no stock file (memory mode, or none copied),
     the file has no lot columns, or it can't be read: lines then export
@@ -995,16 +1000,17 @@ def session_lot_table(store, session_path, config) -> dict | None:
     if not session_path:
         return None
     rel = f"{session_state.session_rel(store, session_path)}/input/inventory.csv"
-    if not store.exists(rel):
+    if stock_path is None and not store.exists(rel):
         return None
     config = config or {}
     mappings = config.get("column_mappings") or {}
     try:
         setting = (config.get("settings") or {}).get("stock_csv_delimiter", AUTO_DELIMITER)
         # detect_csv_delimiter sniffs by path, so it gets the store's local path.
+        local = stock_path or str(store.local_path(rel))
         raw = pd.read_csv(
-            io.BytesIO(store.read_bytes(rel)),
-            delimiter=resolve_delimiter(str(store.local_path(rel)), setting, "stock"),
+            local,
+            delimiter=resolve_delimiter(local, setting, "stock"),
             encoding="utf-8-sig",
             dtype=_get_sku_dtype_dict(mappings, "stock"),
         )
@@ -1224,6 +1230,7 @@ def _save_results_and_reports(
     session_path: str | None = None,
     memory_baseline_reused: bool = False,
     analysis_data: dict | None = None,
+    history_read: tuple | None = None,
     run_config: dict | None = None,
 ) -> tuple[str | None, str | None]:
     """Saves all analysis results, reports, and updates history.
@@ -1250,6 +1257,8 @@ def _save_results_and_reports(
         current_session: Name of this run's session (None without a session path)
         history_readable: False when the history file couldn't be read at load;
             the run then neither checks nor records repeats
+        history_read: The run's (frame, stamp) from its history read, reused
+            by the record step so the file is read once (None: read it there)
         session_path: This run's session, where the memory baseline is written
             (working_path is the output directory in legacy mode)
         memory_baseline_reused: The run read stock from a baseline this
@@ -1344,7 +1353,8 @@ def _save_results_and_reports(
             else None
         )
         if not fulfillment_history.record_session(
-            history_store, history_rel, current_session, final_df, existing_sessions=existing_sessions
+            history_store, history_rel, current_session, final_df,
+            existing_sessions=existing_sessions, read=history_read,
         ):
             stats["history_warning"] = HISTORY_WARNING
     else:
@@ -1639,7 +1649,7 @@ def run_full_analysis(
         step(1)
         # Step 3: Load history data
         logger.info("Step 3: Loading fulfillment history...")
-        history_df, history_readable = _load_history_data(
+        history_df, history_readable, history_read = _load_history_data(
             orders_file_path, client_id, profile_manager, config
         )
 
@@ -1712,6 +1722,7 @@ def run_full_analysis(
             store,
             current_session=current_session,
             history_readable=history_readable,
+            history_read=history_read,
             session_path=session_path,
             memory_baseline_reused=bool(config.get("_memory_baseline_reused")),
             analysis_data=result.analysis_data,

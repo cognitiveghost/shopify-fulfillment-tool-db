@@ -267,3 +267,24 @@ def test_local_path_failed_check_raises_store_error(store, monkeypatch):
     monkeypatch.setattr(type(store), "_bucket", property(down))
     with pytest.raises(StoreError):
         store.local_path(S + "input/a.csv")
+
+
+def test_exists_row_does_not_fetch_body(store, monkeypatch):
+    store.write_json(S + "big.json", {"blob": "x" * 200_000})
+    sizes = []
+    real_send = httpx.Client.send
+
+    def recording_send(self, request, *args, **kwargs):
+        response = real_send(self, request, *args, **kwargs)
+        sizes.append(len(response.content))
+        return response
+
+    monkeypatch.setattr(httpx.Client, "send", recording_send)
+    assert store.exists(S + "big.json") is True
+    assert sizes and max(sizes) < 1000  # no response carried the 200 KB body
+
+
+def test_exists_row_with_null_body_is_false(store):
+    store.write_json(S + "null.json", None)
+    assert store.exists(S + "null.json") is False
+    assert store.exists(S + "missing.json") is False

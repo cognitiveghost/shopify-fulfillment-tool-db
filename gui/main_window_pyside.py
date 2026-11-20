@@ -1,4 +1,3 @@
-import io
 import logging
 import os
 import sys
@@ -15,6 +14,7 @@ from PySide6.QtWidgets import (
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from gui import session_open
 from gui.actions_handler import ActionsHandler
 from gui.client_settings_dialog import ArchivedClientsDialog
 from gui.components import ConfirmDialog, show_error, toast
@@ -981,7 +981,7 @@ class MainWindow(QMainWindow):
             session_path: Path to the selected session
         """
         logger.info(f"Session selected: {session_path}")
-        self.load_existing_session(session_path)
+        self.open_session(session_path)
 
     def save_session_state(self):
         """Save the current analysis state to the session directory.
@@ -1134,131 +1134,6 @@ class MainWindow(QMainWindow):
         elif kind.startswith(f"{PACKING_LISTS}:"):
             toast(self, withdraw_failed_message(kind.partition(":")[2]), role="info")
 
-    def _load_session_analysis(self, session_path):
-        """Load analysis data from session directory.
-
-        Priority order:
-        1. current_state.pkl (reflects the latest modifications)
-        2. fulfillment_analysis.xlsx, then the legacy analysis_report.xlsx:
-           the run's report, without later edits. Gated on analysis_data.json.
-           current_state.xlsx is never read (AUDIT-07-H2).
-
-        Args:
-            session_path: Path to session directory (can be str or Path)
-
-        Returns:
-            True if loaded successfully, False otherwise
-        """
-        try:
-            store = self.profile_manager.store
-            analysis_dir = f"{session_state.session_rel(store, session_path)}/analysis"
-
-            # Before the read: a write landing between the two makes the next
-            # save refuse needlessly, never overwrite (ADR 0011).
-            self._state_stamp = session_state.state_stamp(store, session_path)
-
-            # Priority 1: Try loading from current_state.pkl
-            pkl_rel = f"{analysis_dir}/current_state.pkl"
-            if store.exists(pkl_rel):
-                try:
-                    logger.info(f"Loading session state from pickle: {pkl_rel}")
-                    self.analysis_results_df = pd.read_pickle(io.BytesIO(store.read_bytes(pkl_rel)))  # noqa: S301 - written by this app; any signed-in PC can write the bucket, so a planted pickle would run code
-
-                    # Load statistics from JSON if available
-                    stats_rel = f"{analysis_dir}/analysis_stats.json"
-                    if store.exists(stats_rel):
-                        logger.info(f"Loading statistics from: {stats_rel}")
-                        self.analysis_stats = store.read_json(stats_rel)
-                    else:
-                        # Recalculate if stats file missing
-                        logger.info("Statistics file not found - recalculating")
-                        self.analysis_stats = recalculate_statistics(
-                            self.analysis_results_df
-                        )
-
-                    logger.info(
-                        f"Loaded {len(self.analysis_results_df)} rows from current_state.pkl"
-                    )
-                    return True
-
-                except Exception as e:
-                    logger.warning(f"Failed to load pickle, trying the run's report: {e}")
-                    # Continue to fallback options
-
-            # Priority 2: the run's report, fulfillment_analysis.xlsx (or the
-            # legacy analysis_report.xlsx): the run's results, without later
-            # edits. Not current_state.xlsx: it is no longer written, and an
-            # old one can be older than the session's latest run (AUDIT-07-H2).
-            # Check for analysis_data.json first (indicates analysis was completed)
-            analysis_data_rel = f"{analysis_dir}/analysis_data.json"
-
-            if not store.exists(analysis_data_rel):
-                logger.warning(f"Analysis data not found: {analysis_data_rel}")
-                return False
-
-            logger.info(f"Found analysis data: {analysis_data_rel}")
-
-            # Load the actual Excel report to get DataFrame
-            report_rel = f"{analysis_dir}/fulfillment_analysis.xlsx"
-
-            if not store.exists(report_rel):
-                # Try alternative name
-                report_rel = f"{analysis_dir}/analysis_report.xlsx"
-
-            if not store.exists(report_rel):
-                logger.warning(f"Analysis report not found: {report_rel}")
-                return False
-
-            logger.info(f"Loading analysis from original report: {report_rel}")
-
-            # Load DataFrame from Excel
-            self.analysis_results_df = pd.read_excel(io.BytesIO(store.read_bytes(report_rel)))
-
-            # Recalculate statistics (no saved stats for original report)
-            self.analysis_stats = recalculate_statistics(self.analysis_results_df)
-
-            logger.info(f"Loaded {len(self.analysis_results_df)} rows from session")
-            return True
-
-        except Exception:
-            logger.exception("Failed to load session analysis")
-            return False
-
-    def _restore_session_inputs(self, session_path: str) -> None:
-        """Point the stock path and slot at the file this session ran on.
-
-        run_full_analysis copies both inputs into <session>/input/ under fixed
-        names and records them in session_info.json. Without this, a resumed
-        session had results but no stock_file_path, which left Add Product to
-        Order greyed out with nothing on screen saying why. Only the stock
-        file is restored -- see the loop below for why the orders file is not.
-        """
-        try:
-            input_dir = self.session_manager.get_input_dir(session_path)
-        except Exception:
-            logger.exception("Could not resolve the session input directory")
-            return
-
-        info = self.session_manager.get_session_info(session_path) or {}
-        # Stock only, deliberately. Restoring orders_file_path as well would
-        # satisfy update_ui_state's has_orders and re-enable Run Analysis in a
-        # resumed session -- and run_analysis reuses the open session_path, so
-        # one click would overwrite that session's analysis state, discarding
-        # the Add Product additions this very method exists to make reachable.
-        # There is no confirm on that path. Owner's call, 2026-09-20.
-        for kind, default_name in (("stock", "inventory.csv"),):
-            recorded = info.get(f"{kind}_file") or default_name
-            store = self.profile_manager.store
-            rel = f"{session_state.session_rel(store, input_dir)}/{recorded}"
-            if not store.exists(rel):
-                continue
-            # The slot's validator reads the file by path, so it gets the store's local path.
-            setattr(self, f"{kind}_file_path", str(store.local_path(rel)))
-            # validate_file drives the slot into its loaded or invalid face and
-            # is the same call the file pickers make.
-            self.file_handler.validate_file(kind)
-        self.file_handler.check_files_ready()
-
     def _reset_session_state(self, wait: bool = True):
         """Forget the open session's orders, inputs, undo history and stamp.
 
@@ -1293,84 +1168,137 @@ class MainWindow(QMainWindow):
         self._update_all_views()
 
     def load_existing_session(self, session_path: str):
-        """Load data from an existing session.
+        """Load data from an existing session, on this thread.
 
-        Args:
-            session_path: Path to the session directory
+        The UI opens sessions with open_session. This is the synchronous form
+        scripts and tests use: the same read, then the same apply.
         """
-
         try:
             self._reset_session_state()
-            # Set as current session
-            self.session_path = session_path
-            session_name = os.path.basename(session_path)
-            # Resuming a past session is the second way into SESSION; the
-            # first is creating one. Both have to say so, or the bar shows
-            # New Session while a session is open. Spec §3.1.
-            self.command_bar.set_state(BarState.SESSION)
-            # Before the analysis loads: a session without one must not keep
-            # the previous session's chips.
-            self.ui_manager.update_session_chips()
-
-            # Reload undo history for this session
-            if hasattr(self, "undo_manager"):
-                self.undo_manager.reload_session_history()
-
-            # Update session info labels
-            self.update_session_info_label()
-
-            # Load session info
-            session_info = self.session_manager.get_session_info(session_path)
-            self._list_fingerprints = report_jobs.recorded_fingerprints(session_info)
-
-            if session_info:
-                self._restore_session_inputs(session_path)
-
-                # Try to load analysis data if it exists
-                if self._load_session_analysis(session_path):
-                    self.lot_table = core.session_lot_table(
-                        self.profile_manager.store, session_path, self.active_profile_config
-                    )
-                    # Analysis loaded successfully; a session saved by an older
-                    # build may hold a drifted Final_Stock (ADR 0010).
-                    self.analysis_results_df = with_stock_left(self.analysis_results_df)
-                    self._update_all_views()
-
-                    # Auto-switch to Analysis Results, once it has painted them
-                    self.show_results_when_painted()
-
-                    self.log_activity("Session", f"Loaded session: {session_name}")
-                    # On Results itself: the switch above may not have happened
-                    # yet, and the router would draw it on the page being left.
-                    self.results_bridge.raise_toast(
-                        _(
-                            "Session {session_name} opened · {count} orders.",
-                            session_name=session_name,
-                            count=self.analysis_results_df["Order_Number"].nunique(),
-                        )
-                    )
-                else:
-                    # Session exists but no analysis yet: Setup is where its
-                    # files and Run analysis are (phase 4 spec section 7).
-                    self.main_tabs.setCurrentIndex(0)
-                    self.log_activity(
-                        "Session", f"Opened session (no analysis): {session_name}"
-                    )
-                    toast(
-                        self,
-                        _(
-                            "Session {session_name} opened. Run an analysis to see results.",
-                            session_name=session_name,
-                        ),
-                        role="info",
-                    )
-
-                # Update UI state
-                self.update_ui_state()
-
+            self._apply_session(session_path, self._read_session(session_path))
         except Exception:
             logger.exception("Failed to load session")
             show_error(self, _("The session wasn't loaded"), _("Details are in Logs."))
+
+    def _read_session(self, session_path: str) -> session_open.SessionLoad:
+        return session_open.read_session(
+            self.profile_manager.store, self.session_manager, session_path, self.active_profile_config
+        )
+
+    def open_session(self, session_path: str) -> None:
+        """Open a past session without blocking: its reads run on a worker, then _apply_session.
+
+        Returns at once. A read that lands after another session was opened or
+        left is dropped; a failed one is reported and leaves no session open.
+        """
+        self._reset_session_state(wait=False)
+        self.session_path = session_path
+        self.command_bar.set_state(BarState.SESSION)
+        self.command_bar.set_client_loading(True, os.path.basename(session_path))
+        self.update_session_info_label()
+        store = self.profile_manager.store
+        session_manager = self.session_manager
+        config = self.active_profile_config
+        queue = getattr(self, "write_queue", None)
+
+        def read():
+            # What _reset_session_state flushes on the UI thread, moved here (spec B2).
+            if queue is not None and not queue.flush(timeout=10):
+                logger.warning(f"Background writes still pending while opening a session: {queue.pending()}")
+            return session_open.read_session(store, session_manager, session_path, config)
+
+        worker = Worker(read)
+        worker.signals.result.connect(lambda loaded, path=session_path: self._on_session_loaded(path, loaded))
+        worker.signals.error.connect(lambda error, path=session_path: self._on_session_load_error(path, error))
+        self._start_tracked(worker)
+
+    def _on_session_loaded(self, session_path: str, loaded: session_open.SessionLoad) -> None:
+        """A read finished (UI thread). Apply it if its session is still the one open."""
+        if self.session_path != session_path:
+            logger.debug(f"Dropped the read of {session_path}: another session is open now")
+            return
+        self.command_bar.set_client_loading(False)
+        try:
+            self._apply_session(session_path, loaded)
+        except Exception:
+            logger.exception("Failed to load session")
+            show_error(self, _("The session wasn't loaded"), _("Details are in Logs."))
+
+    def _on_session_load_error(self, session_path: str, error) -> None:
+        """A read failed (UI thread). Report it if its session is still the one open."""
+        _exctype, value, _tb = error
+        logger.error("Failed to load session", exc_info=value)
+        if self.session_path != session_path:
+            logger.debug(f"Dropped the failed read of {session_path}: another session is open now")
+            return
+        self.session_path = None
+        self.command_bar.set_client_loading(False)
+        self.command_bar.set_state(BarState.NO_SESSION)
+        self.update_session_info_label()
+        show_error(self, _("The session wasn't loaded"), _("Details are in Logs."))
+
+    def _apply_session(self, session_path: str, loaded: session_open.SessionLoad) -> None:
+        """Show a session that session_open.read_session has read. UI thread only, no store reads for it."""
+        session_name = os.path.basename(session_path)
+        self.session_path = session_path
+        # Resuming a past session is the second way into SESSION; the
+        # first is creating one. Both have to say so. Spec §3.1.
+        self.command_bar.set_state(BarState.SESSION)
+        # Before the analysis loads: a session without one must not keep
+        # the previous session's chips.
+        self.ui_manager.update_session_chips(loaded.session_info or {})
+        if hasattr(self, "undo_manager"):
+            self.undo_manager.apply_session_history(loaded.undo_history)
+        self.update_session_info_label()
+
+        session_info = loaded.session_info
+        self._state_stamp = loaded.state_stamp
+        self._list_fingerprints = report_jobs.recorded_fingerprints(session_info)
+        if not session_info:
+            return
+        if loaded.stock_path is not None:
+            self.stock_file_path = loaded.stock_path
+            # validate_file drives the slot into its loaded or invalid face and
+            # is the same call the file pickers make.
+            self.file_handler.validate_file("stock")
+        self.file_handler.check_files_ready()
+
+        if loaded.analysis_df is not None:
+            self.analysis_stats = loaded.analysis_stats
+            self.lot_table = loaded.lot_table
+            # Analysis loaded successfully; a session saved by an older
+            # build may hold a drifted Final_Stock (ADR 0010).
+            self.analysis_results_df = with_stock_left(loaded.analysis_df)
+            self._update_all_views()
+
+            # Auto-switch to Analysis Results, once it has painted them
+            self.show_results_when_painted()
+
+            self.log_activity("Session", f"Loaded session: {session_name}")
+            # On Results itself: the switch above may not have happened
+            # yet, and the router would draw it on the page being left.
+            self.results_bridge.raise_toast(
+                _(
+                    "Session {session_name} opened · {count} orders.",
+                    session_name=session_name,
+                    count=self.analysis_results_df["Order_Number"].nunique(),
+                )
+            )
+        else:
+            # Session exists but no analysis yet: Setup is where its
+            # files and Run analysis are (phase 4 spec section 7).
+            self.main_tabs.setCurrentIndex(0)
+            self.log_activity("Session", f"Opened session (no analysis): {session_name}")
+            toast(
+                self,
+                _(
+                    "Session {session_name} opened. Run an analysis to see results.",
+                    session_name=session_name,
+                ),
+                role="info",
+            )
+
+        self.update_ui_state()
 
     def _update_all_views(self):
         """Central slot to refresh every view after `analysis_results_df` changes.

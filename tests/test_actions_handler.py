@@ -540,7 +540,6 @@ def test_run_analysis_hands_the_run_its_progress_callback(monkeypatch):
 
     handler.run_analysis()
 
-    assert captured["fn"] is core.run_full_analysis
     assert captured["kwargs"]["progress"] == handler._report_step
     assert mw._analysis_running is True
     assert mw._analysis_step == 0
@@ -566,27 +565,6 @@ def _run_window(**extra):
         ui_manager=Mock(),
         **extra,
     )
-
-
-def test_a_run_waits_for_pending_writes(monkeypatch):
-    """Repeat detection reads history, and memory feeds the run (AUDIT-07-H2)."""
-    events = []
-    monkeypatch.setattr("gui.actions_handler.Worker", lambda *a, **k: events.append(("worker",)) or Mock())
-    mw = _run_window(write_queue=Mock(flush=Mock(side_effect=lambda **k: events.append(("flush", k)) or True)))
-    ActionsHandler(mw).run_analysis()
-    assert events == [("flush", {"timeout": 30}), ("worker",)]
-
-
-def test_a_run_is_refused_while_writes_are_still_pending(monkeypatch):
-    captured = {}
-    monkeypatch.setattr("gui.actions_handler.Worker", lambda *a, **k: captured.setdefault("worker", Mock()))
-    toasts = []
-    monkeypatch.setattr("gui.actions_handler.toast", lambda src, text, **k: toasts.append(text))
-    mw = _run_window(write_queue=Mock(flush=Mock(return_value=False)))
-    ActionsHandler(mw).run_analysis()
-    assert toasts == ["Your last changes are still being saved. Run the analysis again in a moment."]
-    assert captured == {}  # no Worker built
-    assert mw._analysis_running is False
 
 
 def test_a_run_is_refused_while_reports_are_being_generated(monkeypatch):

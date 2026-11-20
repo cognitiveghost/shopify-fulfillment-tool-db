@@ -8,6 +8,7 @@ from PySide6.QtCore import QThreadPool
 from PySide6.QtWidgets import QFileDialog
 
 from gui.components import ConfirmDialog, show_error, toast
+from gui.pull_preview_dialog import PullPreviewDialog
 from gui.setup_state import MAPPING_PAGE
 from gui.worker import Worker
 from shared.i18n import N_, _, _n
@@ -133,11 +134,12 @@ class FileHandler:
         self.validate_file(kind)
 
     def pull_orders(self) -> None:
-        """Fetch the client's open orders from its store, then load them as a CSV was.
+        """Fetch the client's open orders, let the operator pick them, then load them as a CSV was.
 
-        The fetch and the write to the session's input/orders_export.csv
-        (replacing any earlier input) run in a worker; the file then goes down
-        the same route as a picked one.
+        The fetch runs in a worker; the preview asks which orders to keep; the
+        kept ones are written to the session's input/orders_export.csv
+        (replacing any earlier input) in a second worker. The file then goes
+        down the same route as a picked one.
         """
         if not self.mw.session_path:
             self.log.warning("pull_orders called with no session open")
@@ -160,7 +162,36 @@ class FileHandler:
         override = config.get("settings", {}).get("orders_csv_delimiter")
         sep = override if override and override != AUTO_DELIMITER else ","
         shop = source.get("shop", "")
-        worker = Worker(_pull_into_session, source, store, rel, sep)
+        # No `finished` clear here: the preview runs between this worker's result
+        # and the write, and the slot clears _pull_worker at every exit.
+        worker = Worker(fetch_orders, source)
+        worker.signals.result.connect(
+            lambda orders_df: self._on_orders_fetched(orders_df, shop, session_path, rel, sep)
+        )
+        worker.signals.error.connect(self._on_pull_failed)
+        self._pull_worker = worker
+        QThreadPool.globalInstance().start(worker)
+
+    def _on_orders_fetched(self, orders_df, shop: str, session_path, rel: str, sep: str) -> None:
+        if orders_df.empty:
+            self._pull_worker = None
+            toast(self.mw, _("No open unfulfilled orders in {shop}", shop=shop))
+            return
+        if self.mw.session_path != session_path:
+            self.log.info("Pulled orders arrived after the session changed; not previewed")
+            self._pull_worker = None
+            return
+        selected = PullPreviewDialog.ask(self.mw, orders_df, shop)
+        if selected is None:
+            self._pull_worker = None
+            return
+        if self.mw.session_path != session_path:
+            # The preview was answered for a session that is no longer open.
+            self.log.info("Pulled orders arrived after the session changed; not loaded")
+            self._pull_worker = None
+            return
+        store = self.mw.profile_manager.store
+        worker = Worker(_write_pulled, store, rel, orders_df[orders_df["Name"].isin(selected)], sep)
         worker.signals.result.connect(
             lambda result: self._on_orders_pulled(result, shop, session_path)
         )
@@ -170,6 +201,7 @@ class FileHandler:
         QThreadPool.globalInstance().start(worker)
 
     def _on_pull_failed(self, error) -> None:
+        self._pull_worker = None
         _exc_type, exc, details = error
         if isinstance(exc, OrderSourceError):
             show_error(self.mw, _("Orders weren't pulled"), str(exc))
@@ -182,9 +214,6 @@ class FileHandler:
         if self.mw.session_path != session_path:
             # Written into the session it was pulled for; this one never asked.
             self.log.info("Pulled orders arrived after the session changed; not loaded")
-            return
-        if path is None:
-            toast(self.mw, _("No open unfulfilled orders in {shop}", shop=shop))
             return
         self.load_file("orders", path)
         toast(
@@ -809,10 +838,15 @@ class FileHandler:
         return str(merged_path), len(merged_df), skipped
 
 
-def _pull_into_session(source, store, rel: str, sep: str):
-    """Worker body: (orders, local path of the written input), path None when there are none."""
-    orders_df = fetch_orders(source)
-    if orders_df.empty:
-        return orders_df, None
-    store.write_bytes(rel, orders_df.to_csv(index=False, sep=sep).encode("utf-8"))
-    return orders_df, str(store.local_path(rel))
+def _write_pulled(store, rel: str, orders_df: pd.DataFrame, sep: str) -> tuple[pd.DataFrame, str]:
+    """Worker body: write the kept orders as the session's input; (orders, local path of it)."""
+    data = orders_df.to_csv(index=False, sep=sep).encode("utf-8")
+    store.write_bytes(rel, data)
+    cache_dir = getattr(store, "cache_dir", None)
+    if cache_dir is None:
+        return orders_df, str(store.local_path(rel))  # FileStore: the file just written
+    # SupabaseStore: the bytes are in hand, so fill the cache instead of downloading them back.
+    path = Path(cache_dir) / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return orders_df, str(path)
